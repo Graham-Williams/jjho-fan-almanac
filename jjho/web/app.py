@@ -28,10 +28,23 @@ import secrets
 from datetime import timedelta
 from urllib.parse import urlsplit
 
+from datetime import datetime
+
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    session, url_for)
 
+from ..data import db
 from .password_gate import LoginRateLimiter, client_ip, safe_next
+
+
+def _fmt_date(pub_date: str | None, raw: str | None) -> str:
+    """Human date for a row (ISO pref, else the raw RSS string, else blank)."""
+    if pub_date:
+        try:
+            return datetime.fromisoformat(pub_date).strftime("%b %-d, %Y")
+        except ValueError:
+            pass
+    return (raw or "").split("+")[0].strip()
 
 log = logging.getLogger("jjho.web")
 
@@ -180,5 +193,20 @@ def create_app() -> Flask:
     @app.get("/")
     def index():
         return render_template("index.html")
+
+    @app.get("/episodes")
+    def episodes():
+        q = (request.args.get("q") or "").strip()
+        conn = db.get_conn()
+        try:
+            rows = db.list_episodes(conn, q or None)
+            stats = db.coverage_stats(conn)
+        finally:
+            conn.close()
+        for r in rows:
+            r["date_display"] = _fmt_date(r.get("pub_date"),
+                                          r.get("pub_date_raw"))
+        return render_template("episodes.html", episodes=rows, q=q,
+                               stats=stats)
 
     return app

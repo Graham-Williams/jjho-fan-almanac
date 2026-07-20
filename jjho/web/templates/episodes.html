@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}The Docket — The Fan Almanac{% endblock %}
+{% block head %}
+<script defer src="{{ url_for('static', filename='js/episodes.js') }}"></script>
+<style>
+  .docket-head { display: flex; flex-wrap: wrap; align-items: baseline;
+                 justify-content: space-between; gap: .5rem; }
+  .docket-head .count { color: var(--muted); font-size: .9rem;
+                        font-variant: small-caps; letter-spacing: .04em; }
+  form.filter { margin: 1.1rem 0 .4rem; display: flex; gap: .6rem;
+                flex-wrap: wrap; }
+  form.filter input[type=text] { width: 26rem; max-width: 100%; flex: 1 1 18rem; }
+  .filter-note { color: var(--muted); font-size: .82rem; font-style: italic;
+                 margin: 0 0 1.4rem; }
+  ol.docket { list-style: none; padding: 0; margin: 0; }
+  li.entry { border-bottom: 1px solid var(--rule); padding: .85rem 0 .95rem; }
+  li.entry .row1 { display: flex; flex-wrap: wrap; align-items: baseline;
+                   gap: .55rem; }
+  li.entry .caseno { font-family: "SF Mono","JetBrains Mono","Fira Mono",Menlo,
+                     Consolas,monospace; font-size: .78rem; color: var(--brass);
+                     letter-spacing: .03em; white-space: nowrap;
+                     border: 1px solid var(--rule); border-radius: 3px;
+                     padding: .05rem .4rem; }
+  li.entry .etitle { font-weight: bold; font-size: 1.12rem; color: var(--ink); }
+  li.entry .edate { color: var(--muted); font-size: .82rem; white-space: nowrap; }
+  li.entry .blurb { margin: .3rem 0 .35rem; color: var(--ink); }
+  li.entry .meta { display: flex; flex-wrap: wrap; gap: 1rem;
+                   align-items: baseline; font-size: .84rem; }
+  .pill { font-variant: small-caps; letter-spacing: .03em; font-size: .76rem;
+          border-radius: 999px; padding: .08rem .6rem; white-space: nowrap; }
+  .pill.has { color: var(--bottle);
+              border: 1px solid color-mix(in srgb, var(--bottle) 45%, transparent);
+              background: color-mix(in srgb, var(--bottle) 12%, transparent); }
+  .pill.none { color: var(--muted); border: 1px dashed var(--rule); }
+  .bailiff { color: var(--muted); font-style: italic; }
+  #no-results { color: var(--muted); font-style: italic; padding: 1.5rem 0; }
+  .coverage-note { color: var(--muted); font-size: .78rem; font-style: italic;
+                   border-top: 1px dotted var(--rule); margin-top: 1.6rem;
+                   padding-top: .8rem; }
+  .empty-index { background: var(--panel); border: 1px solid var(--rule);
+                 border-left: 4px solid var(--oxblood); border-radius: 4px;
+                 padding: 1rem 1.25rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>The Docket
+  <span class="sub">Every dispute heard in Fake Internet Court — newest first.</span>
+</h1>
+
+{% if stats.total == 0 %}
+  <div class="empty-index">
+    <p>The docket is empty — the episode index has not been built yet.</p>
+    <p class="muted">Run <code>python -m jjho.data.ingest</code> to pull the RSS
+      feed and Wikipedia tables into the index, then reload.</p>
+  </div>
+{% else %}
+  <form class="filter" method="get" action="{{ url_for('episodes') }}"
+        role="search" aria-label="Filter cases">
+    <input type="text" id="filter" name="q" value="{{ q }}"
+           placeholder="Search the docket — title or dispute…"
+           autocomplete="off" autofocus>
+    <button type="submit">Search</button>
+  </form>
+  <p class="filter-note">
+    Filtering <span id="result-count">{{ episodes|length }} cases</span> by title
+    and dispute. Type to narrow instantly.
+  </p>
+
+  <ol class="docket" id="episode-list">
+    {% for ep in episodes %}
+    <li class="entry" data-search="{{ (ep.title ~ ' ' ~ (ep.blurb or ''))|lower }}">
+      <div class="row1">
+        <span class="caseno">{{ ('Ep. ' ~ ep.number) if ep.number is not none
+                                 else 'Special' }}</span>
+        <span class="etitle">{{ ep.title }}</span>
+        {% if ep.date_display %}<span class="edate">{{ ep.date_display }}</span>{% endif %}
+      </div>
+      {% if ep.blurb %}<p class="blurb">{{ ep.blurb }}</p>{% endif %}
+      <div class="meta">
+        {% if ep.listen_url %}
+          <a href="{{ ep.listen_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+        {% elif ep.audio_url %}
+          <a href="{{ ep.audio_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+        {% endif %}
+        {% if ep.guest_bailiff %}<span class="bailiff">Guest bailiff: {{ ep.guest_bailiff }}</span>{% endif %}
+        {% if ep.has_transcript %}
+          <span class="pill has" title="Full transcript on file — deep search reaches this case.">Transcript on file</span>
+        {% else %}
+          <span class="pill none" title="No transcript on file yet — a coverage gap, not a bug.">No transcript</span>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  <p id="no-results" hidden>No cases match that search. Try fewer words.</p>
+
+  <p class="coverage-note">
+    ⚖ Transcript coverage is <strong>not complete</strong>. Full transcripts
+    (which power deep, full-text search) are scraped from Maximum Fun and are
+    strongest for recent years, patchier for the older and live episodes — and
+    the very newest episodes are published before their transcript exists. A
+    “No transcript” marker is a <em>coverage gap, not a bug</em>. On file now:
+    {{ stats.with_transcript }} of {{ stats.total }} episodes.
+  </p>
+{% endif %}
+{% endblock %}
