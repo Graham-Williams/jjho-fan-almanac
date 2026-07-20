@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import feedparser
 
-from . import db
+from . import db, httpclient
 
 log = logging.getLogger("jjho.data.rss")
 
@@ -68,7 +68,13 @@ def _blurb(entry) -> str | None:
 
 def parse_entries() -> list[dict]:
     """Fetch + normalize every feed item into episode dicts."""
-    feed = feedparser.parse(FEED_URL)
+    # Pull the feed through the polite client (identified UA, throttle, backoff);
+    # force=True so a live index run always sees the current feed, never a
+    # cached stale copy (unlike immutable transcript pages).
+    body, status = httpclient.fetch(FEED_URL, force=True)
+    if not body:
+        raise RuntimeError(f"RSS fetch failed: HTTP {status}")
+    feed = feedparser.parse(body)
     if feed.bozo and not feed.entries:
         raise RuntimeError(f"RSS parse failed: {getattr(feed, 'bozo_exception', '?')}")
     rows: list[dict] = []

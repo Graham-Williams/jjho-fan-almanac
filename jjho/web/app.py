@@ -37,6 +37,17 @@ from ..data import db
 from .password_gate import LoginRateLimiter, client_ip, safe_next
 
 
+def _safe_url(u: str | None) -> str:
+    """Only let http(s) URLs reach an href — blank a javascript:/data: scheme.
+
+    Jinja autoescaping prevents attribute breakout but not a hostile scheme in
+    a scraped URL, so gate the scheme before it lands in the template.
+    """
+    if not u:
+        return ""
+    return u if urlsplit(u).scheme in ("http", "https") else ""
+
+
 def _fmt_date(pub_date: str | None, raw: str | None) -> str:
     """Human date for a row (ISO pref, else the raw RSS string, else blank)."""
     if pub_date:
@@ -61,6 +72,7 @@ def create_app() -> Flask:
                             datefmt="%H:%M:%S")
 
     app = Flask(__name__)
+    app.jinja_env.filters["safe_url"] = _safe_url
 
     app_host = os.environ.get("APP_HOST", "")
     if not app_host:

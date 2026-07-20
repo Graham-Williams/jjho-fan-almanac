@@ -78,9 +78,9 @@
       {% if ep.blurb %}<p class="blurb">{{ ep.blurb }}</p>{% endif %}
       <div class="meta">
         {% if ep.listen_url %}
-          <a href="{{ ep.listen_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+          <a href="{{ ep.listen_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
         {% elif ep.audio_url %}
-          <a href="{{ ep.audio_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+          <a href="{{ ep.audio_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
         {% endif %}
         {% if ep.guest_bailiff %}<span class="bailiff">Guest bailiff: {{ ep.guest_bailiff }}</span>{% endif %}
         {% if ep.has_transcript %}
