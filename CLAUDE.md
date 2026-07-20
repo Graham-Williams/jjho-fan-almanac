@@ -1,0 +1,115 @@
+# CLAUDE.md
+
+Guidance for Claude Code when working in this repository.
+
+## Project
+
+**JJHo — The Fan Almanac**: an unofficial fan companion for the *Judge John
+Hodgman* podcast (Maximum Fun; ~760 episodes). A courtroom-themed reference to
+the disputes, precedents, running bits, and (eventually) verdicts. See
+`README.md` for the user-facing overview and `DESIGN.md` for the full
+architecture, data caveats, and phased build order.
+
+**Not affiliated with Judge John Hodgman, John Hodgman, or Maximum Fun.** It is
+built entirely from public data.
+
+## Status
+
+**Skeleton.** The app boots — a home page, `/healthz`, and the shared-password
+sign-in gate — with the courtroom visual shell. None of the four features
+(Super Search, the Book of Settled Law, Motifs & Running Bits, Justice
+Statistics) are built yet; they land on feature branches per the phased plan in
+`DESIGN.md`.
+
+## Stack
+
+- **Python 3.11+**, **Flask** (server-rendered, no JS framework), **gunicorn**
+  to serve.
+- Deps in `requirements.txt` (kept minimal): `flask`, `gunicorn`, `feedparser`
+  (RSS ingest), `requests` + `beautifulsoup4` (polite cached scraping),
+  `anthropic` (Claude API for Super Search).
+- **SQLite** index (episodes + transcripts), gitignored — re-derivable from
+  public data, so no off-box backup.
+- Package `jjho/`:
+  - `web/app.py` — Flask factory `create_app`; routes (`/`, `/healthz`,
+    `/login`, `/logout`) + security middleware (shared-password gate, Host/Origin
+    CSRF pin, security headers).
+  - `web/password_gate.py` — shared-password gate helpers (safe-`next`, per-IP
+    login rate limiter). Mirrors the sibling apps.
+  - `web/templates/` — `base.html` (courtroom shell, theme-aware, CSP-safe
+    system font stacks), `index.html`, `login.html`.
+
+## Data sources (see DESIGN.md for the caveats)
+
+- **Episode spine:** podcast RSS (`feeds.simplecast.com/q8x9cVws`) + Wikipedia
+  episode tables. Complete, cheap. Powers the episode list + cheap search.
+- **Transcript layer:** polite, rate-limited, disk-cached scraping of Maximum
+  Fun transcripts (`maximumfun.org/transcripts/judge-john-hodgman/…`). Powers
+  deep search; **coverage is partial** (strong recent, patchy old/live) — a
+  hard caveat to surface in-app. Only source for who-won.
+- When you build the scraper: ≥1s between requests, single-threaded, identified
+  User-Agent, backoff on 429/5xx honoring `Retry-After`, on-disk cache, respect
+  robots.txt. Never weaken this without explicit approval (mirror taste-twin's
+  policy).
+
+## Run / test
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # Python 3.11+
+pip install -r requirements.txt
+
+# dev server — with no APP_PASSWORD the sign-in gate is OFF (local dev only)
+flask --app jjho.web run --port 8080     # home: / , health: /healthz
+
+# production-style
+gunicorn --workers 2 --threads 8 -b 0.0.0.0:8080 "jjho.web:create_app()"
+```
+
+Config is via env vars — copy `.env.example` → `.env`. Key ones: `APP_PASSWORD`
+(gate on), `SESSION_SECRET` (cookie signing), `ANTHROPIC_API_KEY` (Super
+Search), `APP_HOST` (Host/Origin CSRF pin for the deployed hostname).
+
+There is no test suite yet — add `pytest` (a `requirements-dev.txt`) alongside
+the first real feature.
+
+## Security posture (keep these invariants)
+
+- **Shared-password gate** (env-gated by `APP_PASSWORD`): when set, every route
+  but `/login`, `/logout`, static, `/healthz` redirects to `/login` until a
+  signed session marker is present. Password compared with
+  `hmac.compare_digest`; only a signed marker is stored (never the raw
+  password); cookie is HttpOnly+Secure+SameSite=Lax, ~30-day. Per-IP failed-login
+  rate limit. **Unset `APP_PASSWORD` = gate OFF — local dev only, never expose.**
+- **`APP_HOST`** pins the Host header on all routes and enforces an
+  Origin/Referer CSRF check on POSTs.
+- **`Referrer-Policy: same-origin`** (not `no-referrer`) — required so the app's
+  own same-origin form POSTs still carry an `Origin` for the CSRF pin.
+- Cloudflare Access JWT verification is a **deferred** option (env vars
+  documented in `.env.example`), not wired — the shared password is the gate.
+
+## Deploy
+
+Docker container on the home box, on the external `km-tracker_default` network,
+through the existing `km-tracker` Cloudflare tunnel, public at
+**`jjho.graham-williams.com`**, gated by the shared `APP_PASSWORD`. Deploy from
+`main` (`git pull && docker compose up -d --build`). See `DEPLOY.md` (stub) and
+`DESIGN.md`.
+
+## Git workflow
+
+- All work on **feature branches** (`feature/<name>`); commit freely there.
+- `main` is **protected**: no direct pushes, no force-push. Changes reach `main`
+  only via a Pull Request that Graham reviews and merges himself. **Never merge a
+  PR to `main` on his behalf.**
+- **Security gate before pushing:** run a skeptical review over the diff for
+  secrets/PII, injection/auth/exposed-endpoint vulns, dependency/supply-chain
+  risk, and data exposure. Any finding → fix → re-run before pushing.
+- **Never commit secrets.** `.env` and `*.db`/`data/` are gitignored;
+  `.env.example` holds placeholders only.
+
+## Self-maintenance
+
+When you add or change a capability, dependency, command, data source, or
+architectural decision, update **this CLAUDE.md and `DESIGN.md`** before the task
+is done. These files are how context persists for the next agent/session that
+enters the repo — if it's not written down, it's lost.

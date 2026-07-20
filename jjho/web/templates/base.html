@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% block head %}{% endblock %}
+<title>{% block title %}The Fan Almanac{% endblock %}</title>
+<style>
+  /* Courtroom / "settled law" identity. Literary serif + monospace case
+     numbers; parchment ground with oxblood, brass & bottle-green accents.
+     No webfont CDN (CSP-safe) — system serif/mono stacks only. Theme-aware. */
+  :root {
+    --ground: #f3ead6;      /* parchment */
+    --panel: #fbf5e6;
+    --ink: #2a2118;
+    --muted: #7a6a52;
+    --rule: #d8c9a8;
+    --oxblood: #7b2320;
+    --brass: #a6801f;
+    --bottle: #1f5136;      /* bottle green */
+    --link: #7b2320;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #17130d;
+      --panel: #1f1a12;
+      --ink: #ece2cd;
+      --muted: #a4906c;
+      --rule: #3a3120;
+      --oxblood: #c96a52;
+      --brass: #d6b24e;
+      --bottle: #6fae86;
+      --link: #d6b24e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #17130d; --panel: #1f1a12; --ink: #ece2cd; --muted: #a4906c;
+    --rule: #3a3120; --oxblood: #c96a52; --brass: #d6b24e; --bottle: #6fae86;
+    --link: #d6b24e;
+  }
+  :root[data-theme="light"] {
+    --ground: #f3ead6; --panel: #fbf5e6; --ink: #2a2118; --muted: #7a6a52;
+    --rule: #d8c9a8; --oxblood: #7b2320; --brass: #a6801f; --bottle: #1f5136;
+    --link: #7b2320;
+  }
+  body {
+    font-family: "Hoefler Text", "Iowan Old Style", Palatino,
+                 "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    background: var(--ground); color: var(--ink);
+    max-width: 780px; margin: 0 auto; padding: 2rem 1.15rem 3rem;
+    line-height: 1.6; font-size: 1.06rem;
+  }
+  code, .case-no, kbd, pre {
+    font-family: "SF Mono", "JetBrains Mono", "Fira Mono", Menlo,
+                 Consolas, monospace;
+  }
+  h1, h2, h3 { line-height: 1.2; color: var(--ink); }
+  h1 { font-size: 1.9rem; margin: .2rem 0 .1rem;
+       border-bottom: 3px double var(--oxblood); padding-bottom: .5rem; }
+  h1 .sub { display: block; font-size: .95rem; font-style: italic;
+            color: var(--muted); font-weight: normal; margin-top: .35rem;
+            border: 0; }
+  a { color: var(--link); text-decoration: none;
+      border-bottom: 1px solid color-mix(in srgb, var(--link) 40%, transparent); }
+  a:hover { border-bottom-color: var(--link); }
+  nav { margin-bottom: 1.75rem; font-variant: small-caps; letter-spacing: .04em; }
+  nav a { margin-right: 1.15rem; border: 0; color: var(--muted); }
+  nav a.brand { color: var(--oxblood); font-weight: bold; font-size: 1.05rem; }
+  .card { background: var(--panel); border: 1px solid var(--rule);
+          border-left: 4px solid var(--brass); border-radius: 4px;
+          padding: 1rem 1.25rem; margin: 1.1rem 0; }
+  .card.error { border-left-color: var(--oxblood); }
+  .card h3 { margin: 0 0 .3rem; color: var(--bottle); }
+  .muted { color: var(--muted); }
+  .case-no { color: var(--muted); font-size: .85rem; letter-spacing: .02em; }
+  input[type=text], input[type=password] {
+      background: var(--ground); color: var(--ink);
+      border: 1px solid var(--rule); border-radius: 3px;
+      padding: .5rem .7rem; font-size: 1rem; width: 16rem; max-width: 70%;
+      font-family: inherit; }
+  button { background: var(--oxblood); color: #fbf5e6; border: none;
+           border-radius: 3px; padding: .55rem 1.15rem; font-size: 1rem;
+           cursor: pointer; font-variant: small-caps; letter-spacing: .05em; }
+  button:hover { background: var(--bottle); }
+  .foot { color: var(--muted); font-size: .82rem; font-style: italic;
+          border-top: 1px solid var(--rule); margin-top: 2.5rem;
+          padding-top: 1rem; }
+</style>
+</head>
+<body>
+<nav>
+  <a class="brand" href="{{ url_for('index') }}">The Fan Almanac</a>
+</nav>
+{% block content %}{% endblock %}
+<div class="foot">An unofficial fan project &middot; not affiliated with Judge
+  John Hodgman, John Hodgman, or Maximum Fun. All rulings belong to the Judge.</div>
+</body>
+</html>

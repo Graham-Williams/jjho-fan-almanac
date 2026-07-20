@@ -1,0 +1,29 @@
+# Environment / secrets (never commit them; .env.example holds placeholders)
+.env
+.env.*
+!.env.example
+
+# SQLite index / caches (all re-derivable from public data, so never committed)
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+data/
+instance/
+
+# Scrape / HTTP caches
+cache/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
