@@ -233,3 +233,113 @@ def episode_has_stored_transcript(conn: sqlite3.Connection,
         (episode_id,),
     ).fetchone()
     return bool(row and row["has_transcript"])
+
+
+# ---------------------------------------------------------------------------
+# Super Search read helpers
+#
+# These back the cost-tiered episode search (jjho/web/search.py):
+#  - ``spine_for_search`` feeds the CHEAP tier: the whole episode spine
+#    (number/title/blurb/dispute), one Claude call, no transcripts.
+#  - ``transcripts_for_terms`` feeds the DEEP tier: a *bounded* keyword-LIKE
+#    filter over ``transcripts.full_text`` for the query's salient terms, so
+#    Claude only ever sees ~15-25 candidate episodes plus matched excerpts,
+#    never every transcript at once.
+# ---------------------------------------------------------------------------
+
+def episode_count(conn: sqlite3.Connection) -> int:
+    """Number of episodes in the index (0 = index not built yet)."""
+    return conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+
+
+def spine_for_search(conn: sqlite3.Connection) -> list[dict]:
+    """Every episode's searchable spine fields, for the cheap search tier.
+
+    Bounded, cheap, complete — number/title/blurb/dispute for all ~760
+    episodes plus the fields the result cards need (listen/audio URLs, guest
+    bailiff, transcript flag, date). Ordered by episode number (specials last).
+    """
+    rows = conn.execute(
+        "SELECT id, number, title, blurb, wiki_dispute, listen_url, "
+        "       audio_url, guest_bailiff, has_transcript, pub_date, "
+        "       pub_date_raw "
+        "FROM episodes "
+        "ORDER BY (number IS NULL), number"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _extract_excerpts(text: str, terms: list[str], window: int = 140,
+                      max_excerpts: int = 2) -> list[str]:
+    """Pull up to ``max_excerpts`` whitespace-collapsed snippets around the
+    first occurrences of ``terms`` in ``text``.
+
+    Each excerpt is ~``2 * window`` chars centred on a matched term, with
+    ellipses marking truncation. Excerpts that would overlap an already-chosen
+    one are skipped so a single dense paragraph doesn't produce duplicates.
+    Pure/deterministic — unit-tested independently of the DB.
+    """
+    if not text or not terms:
+        return []
+    low = text.lower()
+    hits: list[tuple[int, str]] = []
+    for t in terms:
+        idx = low.find(t)
+        if idx != -1:
+            hits.append((idx, t))
+    hits.sort()
+    excerpts: list[str] = []
+    used: list[int] = []
+    for idx, t in hits:
+        if len(excerpts) >= max_excerpts:
+            break
+        if any(abs(idx - u) < window for u in used):
+            continue
+        start = max(0, idx - window)
+        end = min(len(text), idx + len(t) + window)
+        snippet = " ".join(text[start:end].split())
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(text) else ""
+        excerpts.append(f"{prefix}{snippet}{suffix}")
+        used.append(idx)
+    return excerpts
+
+
+def transcripts_for_terms(conn: sqlite3.Connection, terms: list[str],
+                          limit: int = 22, window: int = 140,
+                          max_excerpts: int = 2) -> list[dict]:
+    """Bounded deep-search candidate set: episodes whose stored transcript
+    contains any of ``terms``, ranked by how many distinct terms matched (then
+    by total occurrences), each carrying matched excerpts.
+
+    Keyword-LIKE, not FTS: every term is a bound ``?`` parameter (only the
+    *number* of OR clauses is interpolated), so there is no SQL-injection
+    surface. Returns at most ``limit`` rows so the Claude prompt stays cheap.
+    Empty ``terms`` -> no candidates.
+    """
+    terms = [t for t in terms if t]
+    if not terms:
+        return []
+    like_clauses = " OR ".join(
+        ["t.full_text LIKE ? COLLATE NOCASE"] * len(terms))
+    params = [f"%{t}%" for t in terms]
+    sql = (
+        "SELECT e.id, e.number, e.title, e.blurb, e.wiki_dispute, "
+        "       e.listen_url, e.audio_url, e.guest_bailiff, "
+        "       e.has_transcript, e.pub_date, e.pub_date_raw, t.full_text "
+        "FROM transcripts t JOIN episodes e ON e.id = t.episode_id "
+        "WHERE t.full_text IS NOT NULL AND t.full_text != '' "
+        f"AND ({like_clauses})"
+    )
+    scored: list[dict] = []
+    for r in conn.execute(sql, params).fetchall():
+        d = dict(r)
+        text = d.pop("full_text") or ""
+        low = text.lower()
+        d["match_terms"] = sum(1 for t in terms if t in low)
+        d["match_total"] = sum(low.count(t) for t in terms)
+        d["excerpts"] = _extract_excerpts(text, terms, window, max_excerpts)
+        scored.append(d)
+    scored.sort(key=lambda d: (d["match_terms"], d["match_total"]),
+                reverse=True)
+    return scored[:limit]

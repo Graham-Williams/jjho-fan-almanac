@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Super Search — The Fan Almanac{% endblock %}
+{% block head %}
+<style>
+  form.super { margin: 1.1rem 0 .4rem; display: flex; gap: .6rem;
+               flex-wrap: wrap; align-items: center; }
+  form.super input[type=text] { width: 30rem; max-width: 100%; flex: 1 1 18rem; }
+  .super-controls { flex-basis: 100%; display: flex; flex-direction: column;
+                    gap: .35rem; margin: .3rem 0 1.2rem; }
+  label.deep { display: inline-flex; align-items: center; gap: .45rem;
+               font-size: .92rem; color: var(--ink); cursor: pointer; }
+  label.deep input { width: auto; }
+  .fine { color: var(--muted); font-size: .78rem; font-style: italic;
+          line-height: 1.5; margin: 0; max-width: 46rem; }
+  .hint { color: var(--muted); font-style: italic; padding: 1.4rem 0; }
+  .panel { background: var(--panel); border: 1px solid var(--rule);
+           border-left: 4px solid var(--oxblood); border-radius: 4px;
+           padding: 1rem 1.25rem; margin: 1.2rem 0; }
+  .panel h3 { margin: 0 0 .3rem; color: var(--oxblood); }
+  .results-head { color: var(--muted); font-size: .9rem;
+                  font-variant: small-caps; letter-spacing: .04em;
+                  margin: 1.4rem 0 .2rem; }
+  .hit { background: var(--panel); border: 1px solid var(--rule);
+         border-left: 4px solid var(--brass); border-radius: 4px;
+         padding: .85rem 1.1rem 1rem; margin: 1rem 0; }
+  .hit .row1 { display: flex; flex-wrap: wrap; align-items: baseline;
+               gap: .55rem; }
+  .hit .caseno { font-family: "SF Mono","JetBrains Mono","Fira Mono",Menlo,
+                 Consolas,monospace; font-size: .78rem; color: var(--brass);
+                 letter-spacing: .03em; white-space: nowrap;
+                 border: 1px solid var(--rule); border-radius: 3px;
+                 padding: .05rem .4rem; }
+  .hit .etitle { font-weight: bold; font-size: 1.12rem; color: var(--ink); }
+  .hit .edate { color: var(--muted); font-size: .82rem; white-space: nowrap; }
+  .hit .reason { margin: .4rem 0 .35rem; font-style: italic; color: var(--ink); }
+  .hit .blurb { margin: .2rem 0 .4rem; color: var(--muted); font-size: .9rem; }
+  .hit .meta { display: flex; flex-wrap: wrap; gap: 1rem;
+               align-items: baseline; font-size: .84rem; }
+  .conf { font-variant: small-caps; letter-spacing: .04em; font-size: .72rem;
+          border-radius: 999px; padding: .06rem .6rem; white-space: nowrap; }
+  .conf.high { color: var(--bottle);
+               border: 1px solid color-mix(in srgb, var(--bottle) 45%, transparent);
+               background: color-mix(in srgb, var(--bottle) 12%, transparent); }
+  .conf.medium { color: var(--brass);
+                 border: 1px solid color-mix(in srgb, var(--brass) 45%, transparent);
+                 background: color-mix(in srgb, var(--brass) 12%, transparent); }
+  .conf.low { color: var(--muted); border: 1px dashed var(--rule); }
+  .pill { font-variant: small-caps; letter-spacing: .03em; font-size: .74rem;
+          border-radius: 999px; padding: .06rem .55rem; white-space: nowrap; }
+  .pill.has { color: var(--bottle);
+              border: 1px solid color-mix(in srgb, var(--bottle) 45%, transparent); }
+  .pill.none { color: var(--muted); border: 1px dashed var(--rule); }
+  .escalate { background: var(--panel); border: 1px solid var(--rule);
+              border-left: 4px solid var(--bottle); border-radius: 4px;
+              padding: .85rem 1.1rem; margin: 1.4rem 0 .5rem; }
+  .escalate a { font-weight: bold; }
+  .deep-note { color: var(--muted); font-size: .82rem; font-style: italic;
+               margin: .2rem 0 1rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Super Search
+  <span class="sub">Describe a half-remembered case; the Judge's clerk finds it.</span>
+</h1>
+
+<form class="super" method="get" action="{{ url_for('search') }}"
+      role="search" aria-label="Super Search">
+  <input type="text" name="q" value="{{ q }}"
+         placeholder="e.g. the one about whether a Pop-Tart is a sandwich…"
+         autocomplete="off" autofocus>
+  <button type="submit">Search</button>
+  {# Checkbox lives inside the form: native GET, no JS (CSP forbids inline scripts). #}
+  <div class="super-controls">
+    <label class="deep">
+      <input type="checkbox" name="deep" value="1" {% if deep %}checked{% endif %}>
+      <span>Super Search — search full transcripts (slower, deeper)</span>
+    </label>
+    <p class="fine">
+      ⚖ Cheap search reads only episode titles &amp; disputes. Super Search reads
+      the <strong>full transcripts</strong>, but transcript coverage is
+      <strong>not complete</strong> — strong for recent years, patchier for older
+      and live episodes. A missing old episode is a <em>coverage gap, not a bug</em>.
+    </p>
+  </div>
+</form>
+
+{% if result is none %}
+  <p class="hint">Type a description above and search. The clerk returns the
+    one to three most likely cases, each with a reason and a confidence.</p>
+
+{% elif result.status == 'no_api_key' %}
+  <div class="panel">
+    <h3>Super Search needs an API key</h3>
+    <p class="muted">This feature calls the Claude API to identify episodes,
+      and no <code>ANTHROPIC_API_KEY</code> is configured. Browse
+      <a href="{{ url_for('episodes') }}">The Docket</a> in the meantime — its
+      title/dispute filter works without a key.</p>
+  </div>
+
+{% elif result.status == 'no_index' %}
+  <div class="panel">
+    <h3>Index not built yet</h3>
+    <p class="muted">The episode index is empty. Run
+      <code>python -m jjho.data.ingest</code> to build it, then search again.</p>
+  </div>
+
+{% elif result.status == 'rate_limited' %}
+  <div class="panel">
+    <h3>Easy there, counselor</h3>
+    <p class="muted">Too many searches in a short window. Give it a few
+      minutes and try again.</p>
+  </div>
+
+{% elif result.status == 'error' %}
+  <div class="panel">
+    <h3>The clerk lost the file</h3>
+    <p class="muted">Something went wrong reaching the identification service.
+      Try again in a moment.</p>
+  </div>
+
+{% elif result.status == 'ok' %}
+  {% if result.matches %}
+    <p class="results-head">
+      {{ 'Super Search' if deep else 'Cheap search' }} ·
+      {{ result.matches|length }} likely case{{ '' if result.matches|length == 1 else 's' }}
+    </p>
+    {% if deep %}
+      <p class="deep-note">Searched full transcripts (where on file) plus the
+        title/dispute spine.</p>
+    {% endif %}
+    {% for ep in result.matches %}
+    <div class="hit">
+      <div class="row1">
+        <span class="caseno">{{ ('Ep. ' ~ ep.number) if ep.number is not none
+                                 else 'Special' }}</span>
+        <span class="etitle">{{ ep.title }}</span>
+        {% if ep.date_display %}<span class="edate">{{ ep.date_display }}</span>{% endif %}
+        <span class="conf {{ ep.confidence }}">{{ ep.confidence }} confidence</span>
+      </div>
+      {% if ep.reason %}<p class="reason">“{{ ep.reason }}”</p>{% endif %}
+      {% if ep.blurb %}<p class="blurb">{{ ep.blurb }}</p>{% endif %}
+      <div class="meta">
+        {% if ep.listen_url %}
+          <a href="{{ ep.listen_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+        {% elif ep.audio_url %}
+          <a href="{{ ep.audio_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
+        {% endif %}
+        {% if ep.guest_bailiff %}<span class="muted">Guest bailiff: {{ ep.guest_bailiff }}</span>{% endif %}
+        {% if ep.has_transcript %}
+          <span class="pill has" title="Full transcript on file.">Transcript on file</span>
+        {% else %}
+          <span class="pill none" title="No transcript on file — a coverage gap.">No transcript</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+
+    {% if not deep %}
+    <div class="escalate">
+      Didn't find what you're looking for?
+      <a href="{{ url_for('search') }}?q={{ q|urlencode }}&amp;deep=1">Try Super Search →</a>
+      <span class="muted">(re-runs this exact search over the full transcripts)</span>
+    </div>
+    {% endif %}
+  {% else %}
+    <div class="panel">
+      <h3>No confident match</h3>
+      <p class="muted">The clerk couldn't confidently identify a case from that
+        description.
+        {% if not deep %}Try <a href="{{ url_for('search') }}?q={{ q|urlencode }}&amp;deep=1">Super Search</a>
+        to dig into the full transcripts,{% else %}The transcript for the episode
+        you mean may not be on file yet (a coverage gap),{% endif %}
+        or rephrase with a more specific detail.</p>
+    </div>
+  {% endif %}
+{% endif %}
+{% endblock %}

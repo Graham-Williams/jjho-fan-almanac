@@ -28,6 +28,24 @@ UX — cost-tiered, so we don't pay to read every transcript on every query:
   user isn't satisfied; re-runs the same query over transcripts without making
   them retype it.
 
+**Built (Phase 2).** `GET /search`, engine in `jjho/web/search.py`, read helpers
+in `jjho/data/db.py`. **Cheap** = one Claude call over the whole spine
+(`spine_for_search`); **deep** = a bounded candidate set (`transcripts_for_terms`)
+then Claude over excerpts, with the cheap matches unioned in so **deep ⊇ cheap**.
+- **Deep-candidate mechanism = keyword-LIKE, not FTS5.** Salient query terms
+  (stopword-stripped) drive an `OR`-of-`LIKE` scan of `transcripts.full_text`,
+  ranked by distinct-terms-matched then total occurrences, capped at ~22, each
+  carrying whitespace-collapsed excerpts. Chosen over an FTS5 virtual table
+  because it needs **zero schema migration**, works on the existing gitignored
+  DB, and the corpus is small (~760 episodes, partial transcripts) — LIKE is
+  fast enough and deterministic. Revisit FTS5 only if the corpus or query volume
+  grows. Never feeds full transcripts to the model — only titles + excerpts.
+- **Models (from the `claude-api` skill):** cheap = **Haiku 4.5**
+  (`JJHO_SEARCH_MODEL_CHEAP`), deep = **Sonnet 5** (`JJHO_SEARCH_MODEL_DEEP`,
+  thinking disabled). Overridable via env.
+- **Degrades, never 500:** no API key / `anthropic` import / empty index all
+  render friendly panels. Light per-IP throttle on deep searches.
+
 ### 2. The Book of Settled Law
 A browsable index of Hodgman's **precedents** — "Nostalgia is a toxic impulse,"
 hot dog ≠ sandwich, the Tom Waits Principle, etc. Each entry is **tagged

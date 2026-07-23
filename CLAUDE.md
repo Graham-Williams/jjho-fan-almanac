@@ -25,6 +25,8 @@ built entirely from public data.
 - **The Docket** (`/episodes`) — a searchable, newest-first episode browser with
   an instant title/dispute filter and a per-episode transcript-on-file
   indicator (+ the coverage caveat in fine print).
+- **Super Search** (`/search`) — cost-tiered, Claude-powered natural-language
+  episode identification (see the *Super Search* section below).
 
 Measured on the real data: **819 feed items** (784 numbered episodes),
 **521 enriched from Wikipedia** (matched by title). Transcript sample: the
@@ -32,9 +34,52 @@ Measured on the real data: **819 feed items** (784 numbered episodes),
 yet — production lag); over the 100 most-recent it is **51/100**, and of the
 episodes old enough to be transcribed (≤ ep 768) roughly **59%**.
 
-The other three features (Super Search, the Book of Settled Law, Motifs &
-Running Bits, Justice Statistics) are not built yet; they land on feature
-branches per the phased plan in `DESIGN.md`.
+The other three features (the Book of Settled Law, Motifs & Running Bits,
+Justice Statistics) are not built yet; they land on feature branches per the
+phased plan in `DESIGN.md`.
+
+## Super Search (Phase 2)
+
+Cost-tiered, Claude-powered episode identification. Read-only **`GET /search`**
+(shareable; `?q=…&deep=1`). Renders `web/templates/search.html` (courtroom
+aesthetic, reuses the Docket card look); nav link in `base.html`. Engine lives
+in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
+
+- **Cheap tier (default):** ONE Claude call over the episode **spine** (every
+  episode's number/title/blurb/dispute — `db.spine_for_search`). Returns 1-3
+  matches, each with a one-line reason + confidence. Model: **Haiku 4.5**
+  (`claude-haiku-4-5`), env-overridable via `JJHO_SEARCH_MODEL_CHEAP`.
+- **Deep tier ("Super Search" checkbox / escalation):** a **bounded** candidate
+  set THEN Claude. `db.transcripts_for_terms` runs a keyword-LIKE filter over
+  `transcripts.full_text` for the query's salient terms → top ~22 candidate
+  episodes with matched **excerpts** (never full transcripts). Titles + excerpts
+  go to **Sonnet 5** (`claude-sonnet-5`, env `JJHO_SEARCH_MODEL_DEEP`; thinking
+  disabled to protect the JSON budget + keep it snappy). The cheap spine matches
+  are unioned in so **deep ⊇ cheap**. **Deep-candidate mechanism = keyword-LIKE**
+  (not FTS5): zero schema migration, works on the existing DB, coverage is small.
+- **UX:** search box + a "Super Search" checkbox (deep up front). After a *cheap*
+  search **with** results, a "Didn't find what you're looking for? Try Super
+  Search" control links to `?q=<same>&deep=1` (hidden once deep has run). The
+  transcript coverage caveat is in fine print by the controls.
+- **Graceful degradation (never 500):** no `ANTHROPIC_API_KEY` (or `anthropic`
+  not importable) → "needs an API key" panel; empty index → "index not built
+  yet"; blank query → hint; any Claude/parse failure → friendly error panel.
+  `run_search()` never raises and never logs the prompt body or the key.
+- **Cost guard:** **every** search that reaches Claude is metered per-IP —
+  cheap (one Haiku call over the spine) counts too, not just deep (the shared
+  password means a leaked session could otherwise script `/search?q=…` and run
+  up the Anthropic bill). Two sliding-window limiters (reusing
+  `LoginRateLimiter`): an **overall** budget every Claude-calling search
+  consumes (`search_limiter`, `JJHO_SEARCH_MAX`, default 60 / window) **plus** a
+  stricter **deep** budget a deep search *additionally* consumes
+  (`deep_search_limiter`, `JJHO_DEEP_SEARCH_MAX`, default 30 / window); shared
+  window `JJHO_SEARCH_WINDOW` (default 900s). So total per-IP Claude-calling
+  searches are bounded and deep stays more tightly bounded than cheap. Only a
+  request that actually calls Claude is charged — the `no_api_key` / `no_index`
+  / `empty_query` degradation paths make no call and don't spend the budget. A
+  throttled request renders the friendly "Easy there, counselor" panel with a
+  **429** (never a 500). The route also wraps `db.get_conn()` so an unexpected
+  DB error degrades to the "index unavailable" panel instead of 500ing.
 
 ## Stack
 
@@ -51,6 +96,8 @@ branches per the phased plan in `DESIGN.md`.
     CSRF pin, security headers).
   - `web/password_gate.py` — shared-password gate helpers (safe-`next`, per-IP
     login rate limiter). Mirrors the sibling apps.
+  - `web/search.py` — Super Search engine (cheap/deep tiers, Claude calls,
+    tolerant JSON parsing, graceful degradation). Flask-free/importable.
   - `web/templates/` — `base.html` (courtroom shell, theme-aware, CSP-safe
     system font stacks), `index.html`, `login.html`, `episodes.html` (The
     Docket browser).
@@ -119,8 +166,11 @@ Config is via env vars — copy `.env.example` → `.env`. Key ones: `APP_PASSWO
 (gate on), `SESSION_SECRET` (cookie signing), `ANTHROPIC_API_KEY` (Super
 Search), `APP_HOST` (Host/Origin CSRF pin for the deployed hostname).
 
-There is no test suite yet — add `pytest` (a `requirements-dev.txt`) alongside
-the first real feature.
+**Tests:** `pip install -r requirements-dev.txt` then `python -m pytest tests/`
+(the venv is Python 3.9 in dev; the code uses deferred annotations so it runs
+there and on the 3.11+ target). The suite covers the Super Search helpers, tier
++ escalation logic, and route behaviour; **the Anthropic client is always
+mocked — no test makes a real API call.**
 
 ## Security posture (keep these invariants)
 
