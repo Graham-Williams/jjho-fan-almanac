@@ -34,6 +34,7 @@ from flask import (Flask, Response, abort, redirect, render_template, request,
                    session, url_for)
 
 from ..data import db
+from . import search as search_engine
 from .password_gate import LoginRateLimiter, client_ip, safe_next
 
 
@@ -92,6 +93,10 @@ def create_app() -> Flask:
         PERMANENT_SESSION_LIFETIME=timedelta(days=30),
     )
     login_limiter = LoginRateLimiter()
+    # Bound Super Search API cost: a light per-IP throttle on DEEP searches
+    # (each is a Claude call over transcripts). Reuses the login limiter's
+    # sliding-window; ~30 deep searches / 15 min / IP before a soft block.
+    deep_search_limiter = LoginRateLimiter(max_failures=30, window_seconds=900)
     if password_gate_enabled:
         if not session_secret:
             log.warning("APP_PASSWORD set but SESSION_SECRET/SECRET_KEY unset "
@@ -220,5 +225,33 @@ def create_app() -> Flask:
                                           r.get("pub_date_raw"))
         return render_template("episodes.html", episodes=rows, q=q,
                                stats=stats)
+
+    @app.get("/search")
+    def search():
+        """Super Search — read-only GET (shareable). ``deep=1`` = the deep,
+        transcript-backed tier. Degrades gracefully (never 500)."""
+        q = (request.args.get("q") or "").strip()
+        deep = (request.args.get("deep") or "").lower() in (
+            "1", "true", "on", "yes")
+
+        result = None
+        if q:
+            # Soft per-IP throttle on the expensive deep tier only.
+            if deep and deep_search_limiter.is_blocked(client_ip()):
+                result = {"status": "rate_limited", "deep": True, "query": q,
+                          "matches": []}
+            else:
+                if deep:
+                    deep_search_limiter.record_failure(client_ip())
+                conn = db.get_conn()
+                try:
+                    result = search_engine.run_search(conn, q, deep)
+                finally:
+                    conn.close()
+                for m in result.get("matches", []):
+                    m["date_display"] = _fmt_date(m.get("pub_date"),
+                                                  m.get("pub_date_raw"))
+
+        return render_template("search.html", q=q, deep=deep, result=result)
 
     return app
