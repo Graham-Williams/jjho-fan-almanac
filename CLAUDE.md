@@ -38,6 +38,15 @@ The other three features (the Book of Settled Law, Motifs & Running Bits,
 Justice Statistics) are not built yet; they land on feature branches per the
 phased plan in `DESIGN.md`.
 
+**Responsive/mobile pass done** (issue #8): the app is phone-first without
+regressing desktop or changing the courtroom look. One shared
+`@media (max-width: 640px)` block in `base.html` (full-width inputs, ≥44px tap
+targets, wrapping flex nav, trimmed padding, `-webkit-text-size-adjust`) plus
+per-page tweaks in `episodes.html`/`search.html`/`login.html`. No hamburger —
+the 3-link nav just wraps (brand on its own line on mobile). Inputs stay ≥1rem
+so iOS doesn't zoom on focus. No new deps, no inline JS (CSP). Media-query-scoped
+so desktop CSS is untouched.
+
 ## Super Search (Phase 2)
 
 Cost-tiered, Claude-powered episode identification. Read-only **`GET /search`**

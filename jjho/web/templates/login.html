@@ -1,5 +1,14 @@
 {% extends "base.html" %}
 {% block title %}The Fan Almanac — sign in{% endblock %}
+{% block head %}
+<style>
+  form label { display: inline-block; margin-bottom: .3rem; }
+  @media (max-width: 640px) {
+    /* Full-width sign-in on a phone; the base query already fills the input. */
+    form button { width: 100%; margin-top: .6rem; }
+  }
+</style>
+{% endblock %}
 {% block content %}
 <h1>Bailiff — swear them in
   <span class="sub">One shared password admits you to the court.</span>

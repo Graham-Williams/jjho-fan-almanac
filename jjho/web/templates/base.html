@@ -49,7 +49,10 @@
     background: var(--ground); color: var(--ink);
     max-width: 780px; margin: 0 auto; padding: 2rem 1.15rem 3rem;
     line-height: 1.6; font-size: 1.06rem;
+    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+    overflow-wrap: break-word; word-wrap: break-word;
   }
+  img, button, input { max-width: 100%; }
   code, .case-no, kbd, pre {
     font-family: "SF Mono", "JetBrains Mono", "Fira Mono", Menlo,
                  Consolas, monospace;
@@ -63,8 +66,9 @@
   a { color: var(--link); text-decoration: none;
       border-bottom: 1px solid color-mix(in srgb, var(--link) 40%, transparent); }
   a:hover { border-bottom-color: var(--link); }
-  nav { margin-bottom: 1.75rem; font-variant: small-caps; letter-spacing: .04em; }
-  nav a { margin-right: 1.15rem; border: 0; color: var(--muted); }
+  nav { margin-bottom: 1.75rem; font-variant: small-caps; letter-spacing: .04em;
+        display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.15rem; }
+  nav a { border: 0; color: var(--muted); }
   nav a.brand { color: var(--oxblood); font-weight: bold; font-size: 1.05rem; }
   .card { background: var(--panel); border: 1px solid var(--rule);
           border-left: 4px solid var(--brass); border-radius: 4px;
@@ -85,6 +89,19 @@
   .foot { color: var(--muted); font-size: .82rem; font-style: italic;
           border-top: 1px solid var(--rule); margin-top: 2.5rem;
           padding-top: 1rem; }
+
+  /* --- Phone-first pass (scoped so desktop is untouched). Full-width inputs,
+     thumb-sized tap targets, a wrapping nav, and a touch less padding. Inputs
+     stay ≥1rem so iOS doesn't zoom on focus. --------------------------------- */
+  @media (max-width: 640px) {
+    body { padding: 1.4rem .95rem 2.5rem; font-size: 1.04rem; }
+    h1 { font-size: 1.55rem; }
+    nav { gap: .3rem 1.1rem; margin-bottom: 1.4rem; }
+    nav a.brand { flex-basis: 100%; }   /* brand on its own line, links below */
+    nav a { padding: .45rem 0; }         /* taller thumb target */
+    input[type=text], input[type=password] { width: 100%; max-width: 100%; }
+    button { min-height: 44px; }
+  }
 </style>
 </head>
 <body>
