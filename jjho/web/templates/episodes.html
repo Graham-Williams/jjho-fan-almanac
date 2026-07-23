@@ -40,6 +40,13 @@
   .empty-index { background: var(--panel); border: 1px solid var(--rule);
                  border-left: 4px solid var(--oxblood); border-radius: 4px;
                  padding: 1rem 1.25rem; }
+  @media (max-width: 640px) {
+    form.filter { gap: .5rem; }
+    form.filter input[type=text] { flex-basis: 100%; }   /* filter box full-width */
+    form.filter button { width: 100%; }                  /* thumb-friendly */
+    li.entry .etitle { font-size: 1.06rem; }
+    li.entry .meta { gap: .5rem .9rem; }                 /* tighter but still wraps */
+  }
 </style>
 {% endblock %}
 {% block content %}

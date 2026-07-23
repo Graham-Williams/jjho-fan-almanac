@@ -56,6 +56,17 @@
   .escalate a { font-weight: bold; }
   .deep-note { color: var(--muted); font-size: .82rem; font-style: italic;
                margin: .2rem 0 1rem; }
+  @media (max-width: 640px) {
+    form.super { gap: .5rem; }
+    form.super input[type=text] { flex-basis: 100%; }    /* search box full-width */
+    form.super button { width: 100%; }                   /* thumb-friendly */
+    label.deep { padding: .35rem 0; font-size: 1rem;     /* bigger tap target */
+                 align-items: flex-start; }
+    .hit .etitle { font-size: 1.06rem; }
+    .hit .meta { gap: .5rem .9rem; }
+    .escalate { line-height: 1.75; }
+    .escalate a { display: inline-block; padding: .25rem 0; }  /* tappable link */
+  }
 </style>
 {% endblock %}
 {% block content %}
