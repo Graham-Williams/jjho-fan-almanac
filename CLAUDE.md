@@ -65,8 +65,21 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
   not importable) → "needs an API key" panel; empty index → "index not built
   yet"; blank query → hint; any Claude/parse failure → friendly error panel.
   `run_search()` never raises and never logs the prompt body or the key.
-- **Cost guard:** a light per-IP throttle on **deep** searches only
-  (`deep_search_limiter`, reusing `LoginRateLimiter`; ~30 / 15 min / IP).
+- **Cost guard:** **every** search that reaches Claude is metered per-IP —
+  cheap (one Haiku call over the spine) counts too, not just deep (the shared
+  password means a leaked session could otherwise script `/search?q=…` and run
+  up the Anthropic bill). Two sliding-window limiters (reusing
+  `LoginRateLimiter`): an **overall** budget every Claude-calling search
+  consumes (`search_limiter`, `JJHO_SEARCH_MAX`, default 60 / window) **plus** a
+  stricter **deep** budget a deep search *additionally* consumes
+  (`deep_search_limiter`, `JJHO_DEEP_SEARCH_MAX`, default 30 / window); shared
+  window `JJHO_SEARCH_WINDOW` (default 900s). So total per-IP Claude-calling
+  searches are bounded and deep stays more tightly bounded than cheap. Only a
+  request that actually calls Claude is charged — the `no_api_key` / `no_index`
+  / `empty_query` degradation paths make no call and don't spend the budget. A
+  throttled request renders the friendly "Easy there, counselor" panel with a
+  **429** (never a 500). The route also wraps `db.get_conn()` so an unexpected
+  DB error degrades to the "index unavailable" panel instead of 500ing.
 
 ## Stack
 

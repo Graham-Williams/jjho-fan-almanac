@@ -38,6 +38,15 @@ from . import search as search_engine
 from .password_gate import LoginRateLimiter, client_ip, safe_next
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int env var, falling back to ``default`` if unset/invalid."""
+    try:
+        val = int(os.environ.get(name, "").strip())
+        return val if val > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _safe_url(u: str | None) -> str:
     """Only let http(s) URLs reach an href — blank a javascript:/data: scheme.
 
@@ -93,10 +102,20 @@ def create_app() -> Flask:
         PERMANENT_SESSION_LIFETIME=timedelta(days=30),
     )
     login_limiter = LoginRateLimiter()
-    # Bound Super Search API cost: a light per-IP throttle on DEEP searches
-    # (each is a Claude call over transcripts). Reuses the login limiter's
-    # sliding-window; ~30 deep searches / 15 min / IP before a soft block.
-    deep_search_limiter = LoginRateLimiter(max_failures=30, window_seconds=900)
+    # Bound Super Search API cost. EVERY /search that reaches Claude — cheap
+    # (one Haiku call over the spine) AND deep — costs money, so meter both
+    # against a per-IP budget. Two sliding-window limiters (reusing the login
+    # limiter): an OVERALL budget every Claude-calling search counts against,
+    # plus a stricter DEEP budget a deep search additionally consumes. So the
+    # total per-IP Claude-calling searches are bounded and deep stays more
+    # tightly bounded than cheap. Both maxes + the window are env-overridable.
+    search_window = _env_int("JJHO_SEARCH_WINDOW", 900)
+    search_limiter = LoginRateLimiter(
+        max_failures=_env_int("JJHO_SEARCH_MAX", 60),
+        window_seconds=search_window)
+    deep_search_limiter = LoginRateLimiter(
+        max_failures=_env_int("JJHO_DEEP_SEARCH_MAX", 30),
+        window_seconds=search_window)
     if password_gate_enabled:
         if not session_secret:
             log.warning("APP_PASSWORD set but SESSION_SECRET/SECRET_KEY unset "
@@ -235,23 +254,44 @@ def create_app() -> Flask:
             "1", "true", "on", "yes")
 
         result = None
+        status_code = 200
         if q:
-            # Soft per-IP throttle on the expensive deep tier only.
-            if deep and deep_search_limiter.is_blocked(client_ip()):
-                result = {"status": "rate_limited", "deep": True, "query": q,
+            ip = client_ip()
+            # Meter EVERY search that would reach Claude. A cheap search is
+            # blocked once the overall per-IP budget is spent; a deep search is
+            # blocked when EITHER the overall or the stricter deep budget is
+            # spent (it consumes both). Only a non-empty query is metered — the
+            # degradation paths below (no key / no index / empty) never call
+            # Claude and so never charge the budget.
+            if (search_limiter.is_blocked(ip)
+                    or (deep and deep_search_limiter.is_blocked(ip))):
+                result = {"status": "rate_limited", "deep": deep, "query": q,
                           "matches": []}
+                status_code = 429
             else:
-                if deep:
-                    deep_search_limiter.record_failure(client_ip())
-                conn = db.get_conn()
                 try:
-                    result = search_engine.run_search(conn, q, deep)
-                finally:
-                    conn.close()
-                for m in result.get("matches", []):
-                    m["date_display"] = _fmt_date(m.get("pub_date"),
-                                                  m.get("pub_date_raw"))
+                    conn = db.get_conn()
+                except Exception:  # never 500 — degrade like an empty index
+                    log.warning("search: index unavailable")
+                    result = {"status": "no_index", "deep": deep, "query": q,
+                              "matches": []}
+                else:
+                    try:
+                        result = search_engine.run_search(conn, q, deep)
+                    finally:
+                        conn.close()
+                    # Charge the per-IP budget only when Claude was actually
+                    # called (ok = success, error = the call was attempted then
+                    # failed). no_api_key / no_index / empty_query make no call.
+                    if result.get("status") in ("ok", "error"):
+                        search_limiter.record_failure(ip)
+                        if deep:
+                            deep_search_limiter.record_failure(ip)
+                    for m in result.get("matches", []):
+                        m["date_display"] = _fmt_date(m.get("pub_date"),
+                                                      m.get("pub_date_raw"))
 
-        return render_template("search.html", q=q, deep=deep, result=result)
+        return render_template(
+            "search.html", q=q, deep=deep, result=result), status_code
 
     return app
