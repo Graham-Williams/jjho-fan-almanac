@@ -4,11 +4,13 @@
 !.env.example
 
 # SQLite index / caches (all re-derivable from public data, so never committed)
+# NOTE: anchor to the repo-root data dir only — do NOT ignore the jjho/data
+# Python package. A bare `data/` would match jjho/data/ anywhere in the tree.
 *.db
 *.sqlite
 *.sqlite3
 *.sqlite-*
-data/
+/data/
 instance/
 
 # Scrape / HTTP caches

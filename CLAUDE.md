@@ -15,11 +15,26 @@ built entirely from public data.
 
 ## Status
 
-**Skeleton.** The app boots — a home page, `/healthz`, and the shared-password
-sign-in gate — with the courtroom visual shell. None of the four features
-(Super Search, the Book of Settled Law, Motifs & Running Bits, Justice
-Statistics) are built yet; they land on feature branches per the phased plan in
-`DESIGN.md`.
+**Foundation built (Phase 1).** On top of the courtroom skeleton (home,
+`/healthz`, shared-password gate) the **data spine + episode browser** are live:
+
+- **Ingest pipeline** (`jjho/data/`, CLI `python -m jjho.data.ingest`) builds a
+  gitignored SQLite index from the podcast RSS feed enriched with Wikipedia
+  episode tables, and politely scrapes Maximum Fun transcripts into a transcript
+  store. Idempotent + resumable.
+- **The Docket** (`/episodes`) — a searchable, newest-first episode browser with
+  an instant title/dispute filter and a per-episode transcript-on-file
+  indicator (+ the coverage caveat in fine print).
+
+Measured on the real data: **819 feed items** (784 numbered episodes),
+**521 enriched from Wikipedia** (matched by title). Transcript sample: the
+25 most-recent episodes are **4/25** covered (the newest ~14 have no transcript
+yet — production lag); over the 100 most-recent it is **51/100**, and of the
+episodes old enough to be transcribed (≤ ep 768) roughly **59%**.
+
+The other three features (Super Search, the Book of Settled Law, Motifs &
+Running Bits, Justice Statistics) are not built yet; they land on feature
+branches per the phased plan in `DESIGN.md`.
 
 ## Stack
 
@@ -37,7 +52,31 @@ Statistics) are built yet; they land on feature branches per the phased plan in
   - `web/password_gate.py` — shared-password gate helpers (safe-`next`, per-IP
     login rate limiter). Mirrors the sibling apps.
   - `web/templates/` — `base.html` (courtroom shell, theme-aware, CSP-safe
-    system font stacks), `index.html`, `login.html`.
+    system font stacks), `index.html`, `login.html`, `episodes.html` (The
+    Docket browser).
+  - `web/static/js/episodes.js` — instant client-side docket filter
+    (progressive enhancement; the page also filters server-side via `?q=`).
+    Served from `/static` because the CSP forbids inline scripts.
+- Package `jjho/data/` — the ingest pipeline:
+  - `db.py` — SQLite connection + schema (`meta`, `episodes`, `transcripts`),
+    idempotent UPSERTs, read helpers. DB path: `data/jjho.db` (override
+    `JJHO_DB`; data dir override `JJHO_DATA`). WAL, FK on.
+  - `rss.py` — feedparser spine ingest (guid id, `itunes:episode` number,
+    title, pub date, blurb, audio + listen URL).
+  - `wikipedia.py` — scrapes both episode-list pages; enriches guest bailiff +
+    dispute. **Merged by normalized TITLE, not number** — RSS `itunes:episode`
+    and Wikipedia's `No.` diverge (~2 ahead through the back catalog).
+  - `transcripts.py` — polite MaxFun scraper (crawls the paginated listing to
+    map `ep number → transcript URL`, extracts the `<p>` body from `<main>`).
+  - `httpclient.py` — shared polite cached HTTP (≥1 req/s, on-disk cache under
+    `data/cache/`, identified UA, HTTP/1.1, backoff honoring `Retry-After`).
+  - `ingest.py` — the CLI (`python -m jjho.data.ingest`).
+
+**Data caveat — the SQLite DB and scrape caches live under `data/` and are
+gitignored.** The `.gitignore`/`.dockerignore` entries are **anchored** (`/data`,
+not `data`) so they do NOT swallow the `jjho/data` Python package — a bare
+`data/` matches at every depth and would silently drop the package from git and
+the Docker image.
 
 ## Data sources (see DESIGN.md for the caveats)
 
@@ -63,7 +102,18 @@ flask --app jjho.web run --port 8080     # home: / , health: /healthz
 
 # production-style
 gunicorn --workers 2 --threads 8 -b 0.0.0.0:8080 "jjho.web:create_app()"
+
+# build the episode index (RSS + Wikipedia -> SQLite; idempotent, ~2s)
+python -m jjho.data.ingest
+# + sample the most-recent transcripts (polite, cached, resumable)
+python -m jjho.data.ingest --transcripts --limit 25   # foundation sample
+python -m jjho.data.ingest --transcripts --all        # full backfill (slow)
+python -m jjho.data.ingest --stats                    # coverage summary only
 ```
+
+Deps for the pipeline (`feedparser`, `requests`, `beautifulsoup4`) are already
+in `requirements.txt`. On first boot with no DB, `/episodes` shows a friendly
+"index not built yet — run the ingest" message instead of an error.
 
 Config is via env vars — copy `.env.example` → `.env`. Key ones: `APP_PASSWORD`
 (gate on), `SESSION_SECRET` (cookie signing), `ANTHROPIC_API_KEY` (Super

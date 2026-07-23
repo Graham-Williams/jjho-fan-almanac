@@ -81,6 +81,35 @@ Everything lives in a local **SQLite** index (episodes + transcripts + derived
 tables). It is **gitignored** and **re-derivable from public data**, so there is
 **no off-box backup** — a disk loss costs a re-scrape, not data.
 
+### Built (Phase 1 foundation) — schema + ingest
+
+The pipeline lives in `jjho/data/` (CLI: `python -m jjho.data.ingest`). Schema
+(`meta` schema-version row + two tables):
+
+- **`episodes`** — PK `id` (RSS guid), `number`, `title`, `pub_date`,
+  `pub_date_raw`, `blurb` (RSS summary, back-filled from Wikipedia dispute when
+  empty), `wiki_dispute`, `audio_url`, `listen_url`, `guest_bailiff`,
+  `has_transcript`, source flags `from_rss` / `from_wikipedia`, timestamps.
+- **`transcripts`** — PK `episode_id` (FK → episodes), `full_text`,
+  `source_url`, `fetched_at`, `has_transcript`.
+
+All writes are idempotent UPSERTs; the transcript scraper is resumable
+(disk-cached under `data/cache/`, skips episodes already stored).
+
+**Key finding — merge by TITLE, not number.** The podcast RSS `itunes:episode`
+numbers and Wikipedia's `No.` column **diverge** (Wikipedia counts an early
+pilot/specials differently and runs ~2 ahead through the back catalog), so the
+Wikipedia enrichment is joined on **normalized title** (~96% match). RSS
+numbering stays authoritative for the spine.
+
+**Measured coverage (first real run):** 819 feed items (784 numbered), 521
+episodes enriched from Wikipedia. Transcript sample — 25 most-recent = 4/25
+(the newest ~14 episodes have no transcript yet: Maximum Fun publishes them on a
+lag); 100 most-recent = 51/100; and ~59% for episodes old enough to be
+transcribed (≤ ep 768). This confirms the coverage caveat and is surfaced in
+The Docket's fine print. **Follow-up:** a background full backfill
+(`--all`, ~760 episodes at ≥1 req/s) once the pipeline is merged.
+
 ## Visual identity / styling
 
 Courtroom / "settled law" aesthetic:
@@ -136,12 +165,24 @@ A `DEPLOY.md` runbook is filled in when the app actually deploys.
 ```
 jjho/                    Python package
   __init__.py
+  data/                  Ingest pipeline (the index + transcript layers)
+    db.py                SQLite schema + idempotent UPSERTs + read helpers
+    rss.py               feedparser spine ingest
+    wikipedia.py         episode-table scrape + title-based enrichment
+    transcripts.py       polite MaxFun transcript scraper (listing + body)
+    httpclient.py        shared polite cached HTTP (≥1 req/s, HTTP/1.1)
+    ingest.py            CLI: python -m jjho.data.ingest [--transcripts ...]
   web/                   Flask app
     __init__.py          create_app factory export
-    app.py               routes + security middleware (skeleton)
+    app.py               routes (+ /episodes) + security middleware
     password_gate.py     shared-password gate helpers + rate limiter
-    templates/           base.html (courtroom shell), index.html, login.html
+    templates/           base.html (courtroom shell), index, login, episodes
+    static/js/           episodes.js (instant docket filter; CSP-safe external)
 Dockerfile               gunicorn image
 docker-compose.yml       tunnel-network wiring (jjho.graham-williams.com)
 requirements.txt         flask, gunicorn, feedparser, requests, bs4, anthropic
 ```
+
+> **`.gitignore`/`.dockerignore` gotcha:** ignore the data dir as `/data`
+> (anchored), never bare `data/` — the latter also matches the `jjho/data`
+> Python package and would silently drop it from git and the image.
