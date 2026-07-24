@@ -79,12 +79,24 @@ Two layers: a cheap complete **index** (the spine) and an expensive partial
   single-threaded, on-disk cached, robots-aware — mirror taste-twin's scraping
   discipline) from **Maximum Fun**
   (`maximumfun.org/transcripts/judge-john-hodgman/…`).
+- **Two body formats:** most transcript pages carry the text inline in the
+  `<p>` tags of `<main>`. ~25 episodes (mostly **2023-era**, plus a few 2021–22)
+  instead publish the transcript as a **downloadable PDF** — the page's
+  `<main>` is only a "Download transcript (pdf)" stub. When the inline text is
+  below threshold and the page carries a `maximumfun.org/wp-content/…/*.pdf`
+  link, the PDF is fetched (binary, via `httpclient.fetch_bytes`, same
+  politeness) and parsed with **pypdf**; the PDF URL is recorded as the
+  transcript's `source_url`.
 - **Powers:** deep Super Search. It is also the **only** source for who-won.
 
 ### ⚠️ Coverage caveat (surface this in-app too)
-**Transcript coverage is NOT 100%.** It is strong for recent years and patchy
-for older and live episodes. Consequently **deep search is excellent on modern
-episodes and thinner on the deep back-catalog.** In the UI, frame a missing old
+**Transcript coverage is NOT 100%.** Transcripts exist only from about
+**episode #385 onward** — episodes **1–384 genuinely have no published
+transcript** (Maximum Fun never produced them). Above that floor coverage is
+strong for recent years and patchier for the older/live end. The **true ceiling
+is ~214 transcripts** (of 785 numbered episodes), and the full backfill reaches
+it. Consequently **deep search is excellent on modern episodes and thinner on
+the deep back-catalog, and absent below ~#385.** In the UI, frame a missing old
 episode as a *coverage gap*, not a broken search — this caveat must appear in
 fine print near the deep-search controls when that feature ships.
 
@@ -112,7 +124,16 @@ The pipeline lives in `jjho/data/` (CLI: `python -m jjho.data.ingest`). Schema
   `source_url`, `fetched_at`, `has_transcript`.
 
 All writes are idempotent UPSERTs; the transcript scraper is resumable
-(disk-cached under `data/cache/`, skips episodes already stored).
+(disk-cached under `data/cache/`, skips episodes already stored). HTML pages
+cache as `<hash>.html`; PDF bodies cache as `<hash>.bin`.
+
+**Listing-crawl resilience.** `build_listing_map()` walks the paginated
+transcript index newest-first. It distinguishes a **genuine end-of-listing** (a
+validly-fetched page with zero transcript links → stop) from a **transient
+fetch failure** (`html is None` after retries → log + skip that page, keep
+crawling). An earlier `if not html: break` conflated the two, so a single flaky
+page silently dropped every older episode — the source of a non-deterministic
+189-vs-214 backfill. It is now deterministic (bounded by `MAX_LISTING_PAGES`).
 
 **Key finding — merge by TITLE, not number.** The podcast RSS `itunes:episode`
 numbers and Wikipedia's `No.` column **diverge** (Wikipedia counts an early
@@ -124,9 +145,15 @@ numbering stays authoritative for the spine.
 episodes enriched from Wikipedia. Transcript sample — 25 most-recent = 4/25
 (the newest ~14 episodes have no transcript yet: Maximum Fun publishes them on a
 lag); 100 most-recent = 51/100; and ~59% for episodes old enough to be
-transcribed (≤ ep 768). This confirms the coverage caveat and is surfaced in
-The Docket's fine print. **Follow-up:** a background full backfill
-(`--all`, ~760 episodes at ≥1 req/s) once the pipeline is merged.
+transcribed. This confirms the coverage caveat and is surfaced in The Docket's
+fine print.
+
+**Full-backfill coverage (with PDF extraction):** a `--all` run stores
+**214 transcripts** (of 785 numbered episodes) — the true ceiling. That figure
+includes the ~25 PDF-only episodes recovered by the PDF-extraction path; the
+newest handful still lag (Maximum Fun publishes late) and episodes 1–384 have no
+transcript at all. A newest-first re-crawl is now **deterministic** (the listing
+hardening above fixed the earlier 189-vs-214 flakiness).
 
 ## Visual identity / styling
 
