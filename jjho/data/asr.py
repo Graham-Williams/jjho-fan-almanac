@@ -16,10 +16,11 @@ Design (disk is tight → **stream-and-delete**):
   Whisper (``mlx-community/whisper-large-v3-turbo`` — ~17x real-time on this
   Mac, excellent quality), store the text if it clears ``MIN_ASR_CHARS``, and
   **always delete the temp mp3 in a ``finally``** so audio never accumulates.
-- Resumable + idempotent: a stored transcript short-circuits the episode, so
-  the batch is safe to Ctrl-C and re-run. Every episode is wrapped in
-  try/except — one download/transcribe failure is logged and skipped, never
-  aborting the whole run.
+- Resumable + idempotent: a stored transcript OR a prior ASR attempt (even a
+  sub-threshold no-body sentinel) short-circuits the episode, so the batch is
+  safe to Ctrl-C and re-run without re-transcribing a genuinely-short episode.
+  Every episode is wrapped in try/except — one download/transcribe failure is
+  logged and skipped, never aborting the whole run.
 
 ``mlx_whisper`` is imported lazily inside the transcribe path so importing this
 module (and running the test suite) requires neither the library nor the model.
@@ -169,8 +170,10 @@ def transcribe_missing(conn, *, limit: int | None = None,
         num = ep["number"]
         url = ep["audio_url"]
         # Belt-and-suspenders: another run (or a concurrent one) may have filled
-        # this since selection — skip if now covered.
-        if db.episode_has_stored_transcript(conn, ep["id"]):
+        # this since selection — skip if now covered OR already ASR-attempted
+        # (incl. a prior sub-threshold no-body sentinel). Mirrors the work-queue
+        # exclusion predicate so a resumed run never re-processes a short episode.
+        if db.episode_asr_done(conn, ep["id"]):
             continue
         tmp_path = None
         try:

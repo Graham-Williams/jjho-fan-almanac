@@ -140,6 +140,77 @@ def test_resumable_skips_already_transcribed(conn, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Sub-threshold ASR sentinel resumability (regression: don't re-transcribe a
+# genuinely-short episode forever)
+# ---------------------------------------------------------------------------
+
+def test_asr_subthreshold_sentinel_not_requeued(conn, monkeypatch):
+    """A sub-threshold ASR run stores a source='asr' no-body sentinel; that
+    episode must NOT be re-selected by the work queue and must be treated as
+    done by the in-loop guard, so a resumed run never re-downloads it."""
+    seed_episode(conn, id="e-short", number=310, title="Genuinely short")
+    _patch_pipeline(monkeypatch, SHORT_TEXT)
+
+    first = asr.transcribe_missing(conn, model="m")
+    assert first == {"targeted": 1, "transcribed": 0, "short": 1, "failed": 0}
+
+    # The sentinel row exists: source='asr', no body, has_transcript=0.
+    row = conn.execute(
+        "SELECT full_text, source, has_transcript FROM transcripts "
+        "WHERE episode_id = 'e-short'").fetchone()
+    assert row["source"] == "asr"
+    assert row["full_text"] is None
+    assert row["has_transcript"] == 0
+
+    # Work queue no longer includes it, and the guard reports it done.
+    assert "e-short" not in {e["id"] for e in
+                             db.episodes_needing_transcript(conn)}
+    assert db.episode_asr_done(conn, "e-short")
+
+    # A resumed run does nothing — no re-download/re-transcribe.
+    transcribed_again = {"n": 0}
+
+    def boom_transcribe(path, model):
+        transcribed_again["n"] += 1
+        return LONG_TEXT
+    monkeypatch.setattr(asr, "_transcribe_file", boom_transcribe)
+
+    second = asr.transcribe_missing(conn, model="m")
+    assert second == {"targeted": 0, "transcribed": 0, "short": 0, "failed": 0}
+    assert transcribed_again["n"] == 0
+    # Row is untouched — still the sentinel, not overwritten with LONG_TEXT.
+    assert conn.execute(
+        "SELECT full_text FROM transcripts WHERE episode_id = 'e-short'"
+    ).fetchone()["full_text"] is None
+
+
+def test_maxfun_gap_sentinel_still_eligible_for_asr(conn):
+    """A MaxFun-gap sentinel (source='maxfun', full_text NULL — MaxFun published
+    no transcript) must REMAIN eligible for ASR to fill."""
+    seed_episode(conn, id="e-gap", number=320, title="No MaxFun transcript")
+    # MaxFun scraper's miss: no-body sentinel, default source='maxfun'.
+    db.upsert_transcript(conn, "e-gap", None, "https://maximumfun.org/e-gap",
+                         has_transcript=False)
+    conn.commit()
+
+    assert "e-gap" in {e["id"] for e in db.episodes_needing_transcript(conn)}
+    assert not db.episode_asr_done(conn, "e-gap")
+
+
+def test_real_asr_transcript_skipped(conn):
+    """An episode with a real (>=800 char) ASR body is not re-queued."""
+    seed_episode(conn, id="e-real", number=330, title="Has ASR body")
+    db.upsert_transcript(conn, "e-real", LONG_TEXT,
+                         "https://x/e-real.mp3", has_transcript=True,
+                         source="asr", asr_model="m")
+    conn.commit()
+
+    assert "e-real" not in {e["id"] for e in
+                            db.episodes_needing_transcript(conn)}
+    assert db.episode_asr_done(conn, "e-real")
+
+
+# ---------------------------------------------------------------------------
 # Schema migration / backfill
 # ---------------------------------------------------------------------------
 

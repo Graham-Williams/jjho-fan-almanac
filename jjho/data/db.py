@@ -281,21 +281,54 @@ def episode_has_stored_transcript(conn: sqlite3.Connection,
     return bool(row and row["has_transcript"])
 
 
+def episode_asr_done(conn: sqlite3.Connection, episode_id: str) -> bool:
+    """True if the episode is already finished from the ASR backfill's view.
+
+    An episode is "done" for ASR either because it has a stored transcript body
+    of any source (``maxfun`` or ``asr``) OR because ASR has already been
+    attempted on it — including a sub-threshold run that stored only a
+    ``source='asr'`` no-body sentinel. This mirrors, row-for-row, the exclusion
+    predicate in :func:`episodes_needing_transcript`, so the work-queue and the
+    in-loop skip guard in :func:`jjho.data.asr.transcribe_missing` agree: a
+    genuinely-short episode ASR already tried is never re-downloaded /
+    re-transcribed on a resumed (or same) run.
+
+    Deliberately distinct from :func:`episode_has_stored_transcript` (which is
+    body-only and still used by the MaxFun scraper) so MaxFun behavior — which
+    must keep re-trying MaxFun-gap sentinels — is unchanged.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM transcripts WHERE episode_id = ? "
+        "  AND ((full_text IS NOT NULL AND full_text != '') "
+        "       OR source = 'asr') "
+        "LIMIT 1",
+        (episode_id,),
+    ).fetchone()
+    return row is not None
+
+
 def episodes_needing_transcript(conn: sqlite3.Connection,
                                 limit: int | None = None) -> list[dict]:
-    """Numbered episodes with an ``audio_url`` but NO stored transcript body of
-    either source — the ASR backfill work queue, newest-first.
+    """Numbered episodes with an ``audio_url`` that still need ASR — the backfill
+    work queue, newest-first.
+
+    An episode qualifies only when it has NO transcript row that either holds a
+    non-empty body (maxfun or asr) OR records a prior ASR attempt
+    (``source='asr'``). So an episode ASR already tried — even one whose output
+    was too short to store (a ``source='asr'`` no-body sentinel) — is EXCLUDED,
+    making the batch truly resumable and stopping a genuinely-short episode from
+    being re-downloaded + re-transcribed forever. A **MaxFun-gap** sentinel
+    (``source='maxfun'``, ``full_text`` NULL — MaxFun published no transcript)
+    does NOT match the predicate, so it remains eligible for ASR to fill.
 
     Newest-first (``number DESC``) so the most-listened recent gaps fill first.
-    A LEFT JOIN excludes any episode that already has a non-empty transcript
-    (maxfun or asr), making the batch resumable: re-running only picks up what
-    is still missing.
     """
     sql = (
         "SELECT e.id, e.number, e.title, e.audio_url "
         "FROM episodes e "
         "LEFT JOIN transcripts t ON t.episode_id = e.id "
-        "  AND t.full_text IS NOT NULL AND t.full_text != '' "
+        "  AND ((t.full_text IS NOT NULL AND t.full_text != '') "
+        "       OR t.source = 'asr') "
         "WHERE e.number IS NOT NULL "
         "  AND e.audio_url IS NOT NULL AND e.audio_url != '' "
         "  AND t.episode_id IS NULL "
