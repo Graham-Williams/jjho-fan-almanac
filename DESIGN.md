@@ -74,19 +74,38 @@ Two layers: a cheap complete **index** (the spine) and an expensive partial
 - **Properties:** complete, cheap, fast to (re)build. Powers the episode list
   and **cheap Super Search**.
 
-### Transcript layer / depth — partial
-- **Source:** full transcripts scraped **politely** (rate-limited,
-  single-threaded, on-disk cached, robots-aware — mirror taste-twin's scraping
-  discipline) from **Maximum Fun**
-  (`maximumfun.org/transcripts/judge-john-hodgman/…`).
-- **Powers:** deep Super Search. It is also the **only** source for who-won.
+### Transcript layer / depth — two tiers (provenance in `transcripts.source`)
+- **Tier 1 — `maxfun` (official human transcripts, ~214 eps, ep 385+):** full
+  transcripts scraped **politely** (rate-limited, single-threaded, on-disk
+  cached, robots-aware — mirror taste-twin's scraping discipline) from **Maximum
+  Fun** (`maximumfun.org/transcripts/judge-john-hodgman/…`). Strong-recent /
+  patchy-old on its own.
+- **Tier 2 — `asr` (machine transcripts, the remaining ~570 eps):** we
+  self-transcribe the show's own audio with **local MLX Whisper**. Model
+  `mlx-community/whisper-large-v3-turbo` — the best speed/quality trade-off
+  measured (~17-20x real-time on Graham's Mac, quality on par with the official
+  transcripts). This closes the gap to **true ~100% transcript coverage**.
+  - **Design (`jjho/data/asr.py`): stream-download the mp3 → transcribe →
+    delete the mp3**, always in a `finally` (disk is tight; a 200 MB byte cap
+    bounds each download). Resumable + idempotent (a stored body of either
+    source short-circuits the episode) and per-episode fault-isolated (one
+    download/transcribe failure is logged + skipped, never aborts the batch).
+    Newest-first so the most-listened recent gaps fill first.
+  - **Runs on Graham's Mac, not the box** (Whisper + the ~570 audio downloads);
+    the resulting `data/jjho.db` is shipped to the box like the MaxFun data.
+    `.venv/bin/python -m jjho.data.asr [--limit N] [--model ID]`.
+  - **Honesty:** ASR transcripts are **machine-generated** — the UI must label
+    them (e.g. "auto-transcribed") wherever `source='asr'`. The `source` /
+    `asr_model` columns exist now; the visible label is a follow-up.
+- **Powers:** deep Super Search + who-won extraction.
 
 ### ⚠️ Coverage caveat (surface this in-app too)
-**Transcript coverage is NOT 100%.** It is strong for recent years and patchy
-for older and live episodes. Consequently **deep search is excellent on modern
-episodes and thinner on the deep back-catalog.** In the UI, frame a missing old
-episode as a *coverage gap*, not a broken search — this caveat must appear in
-fine print near the deep-search controls when that feature ships.
+With Tier 2 ASR, transcript coverage approaches **~100%**, but the two tiers
+differ in kind: Tier 1 is a verified human transcript, Tier 2 is a machine
+approximation (occasional mishearings, no speaker labels). In the UI, keep the
+provenance visible — an "auto-transcribed" marker on `source='asr'` episodes —
+so a user knows an ASR transcript is best-effort, not authoritative, and frame
+any residual gap as a *coverage gap*, not a broken search.
 
 ### ⚠️ Who-won / stats caveat
 **No source records episode outcomes** — they exist only in the audio.
@@ -109,10 +128,15 @@ The pipeline lives in `jjho/data/` (CLI: `python -m jjho.data.ingest`). Schema
   empty), `wiki_dispute`, `audio_url`, `listen_url`, `guest_bailiff`,
   `has_transcript`, source flags `from_rss` / `from_wikipedia`, timestamps.
 - **`transcripts`** — PK `episode_id` (FK → episodes), `full_text`,
-  `source_url`, `fetched_at`, `has_transcript`.
+  `source_url`, `fetched_at`, `has_transcript`, plus (**schema v2**) `source`
+  (`'maxfun'`|`'asr'`) + `asr_model` (the Whisper model id for ASR rows, NULL
+  for maxfun). The v1→v2 migration in `init_schema` is an idempotent
+  PRAGMA-guarded `ALTER TABLE ADD COLUMN` that backfills legacy rows to
+  `source='maxfun'`, so an existing gitignored DB upgrades in place on next open.
 
-All writes are idempotent UPSERTs; the transcript scraper is resumable
-(disk-cached under `data/cache/`, skips episodes already stored).
+All writes are idempotent UPSERTs; both the MaxFun scraper and the ASR batch are
+resumable (skip episodes already stored — the scraper also disk-caches under
+`data/cache/`).
 
 **Key finding — merge by TITLE, not number.** The podcast RSS `itunes:episode`
 numbers and Wikipedia's `No.` column **diverge** (Wikipedia counts an early
@@ -187,7 +211,8 @@ jjho/                    Python package
     db.py                SQLite schema + idempotent UPSERTs + read helpers
     rss.py               feedparser spine ingest
     wikipedia.py         episode-table scrape + title-based enrichment
-    transcripts.py       polite MaxFun transcript scraper (listing + body)
+    transcripts.py       Tier 1: polite MaxFun transcript scraper (listing + body)
+    asr.py               Tier 2: local Whisper backfill (stream/transcribe/delete)
     httpclient.py        shared polite cached HTTP (≥1 req/s, HTTP/1.1)
     ingest.py            CLI: python -m jjho.data.ingest [--transcripts ...]
   web/                   Flask app

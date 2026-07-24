@@ -22,7 +22,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Repo-root by default. The data dir (SQLite index + scrape caches) is
 # repo-root/data, overridable with JJHO_DATA (the container mounts a volume
@@ -91,16 +91,47 @@ def init_schema(conn: sqlite3.Connection) -> None:
             full_text      TEXT,
             source_url     TEXT,
             fetched_at     TEXT,
-            has_transcript INTEGER NOT NULL DEFAULT 0
+            has_transcript INTEGER NOT NULL DEFAULT 0,
+            -- Provenance (schema v2): 'maxfun' = official human transcript,
+            -- 'asr' = machine-generated (Whisper). ``asr_model`` records the
+            -- model id for ASR rows (NULL for maxfun). See jjho/data/asr.py.
+            source         TEXT NOT NULL DEFAULT 'maxfun',
+            asr_model      TEXT
         );
         """
     )
+    _migrate_transcript_provenance(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def _migrate_transcript_provenance(conn: sqlite3.Connection) -> None:
+    """Idempotent v1→v2 migration: add ``source``/``asr_model`` to a
+    pre-existing ``transcripts`` table and backfill legacy rows to
+    ``source='maxfun'``.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS``, so each add is guarded by a
+    ``PRAGMA table_info`` membership check. Fresh DBs already have the columns
+    (the CREATE TABLE above), making the ADDs no-ops; only DBs created under
+    schema v1 actually get altered. The backfill is a plain idempotent UPDATE
+    (any row with a NULL ``source`` — i.e. an old MaxFun row — becomes
+    ``'maxfun'``), safe to run on every open.
+    """
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(transcripts)").fetchall()}
+    if "source" not in cols:
+        conn.execute(
+            "ALTER TABLE transcripts ADD COLUMN source TEXT "
+            "NOT NULL DEFAULT 'maxfun'")
+    if "asr_model" not in cols:
+        conn.execute("ALTER TABLE transcripts ADD COLUMN asr_model TEXT")
+    # Backfill any legacy/NULL provenance to the official-transcript default.
+    conn.execute(
+        "UPDATE transcripts SET source = 'maxfun' WHERE source IS NULL")
 
 
 def upsert_episode_rss(conn: sqlite3.Connection, ep: dict) -> str:
@@ -175,21 +206,31 @@ def set_has_transcript(conn: sqlite3.Connection, episode_id: str,
 
 def upsert_transcript(conn: sqlite3.Connection, episode_id: str,
                       full_text: str | None, source_url: str,
-                      has_transcript: bool) -> None:
-    """Idempotently store a transcript fetch result for an episode."""
+                      has_transcript: bool, *, source: str = "maxfun",
+                      asr_model: str | None = None) -> None:
+    """Idempotently store a transcript fetch result for an episode.
+
+    ``source`` records provenance: ``'maxfun'`` (default) for official human
+    transcripts scraped from Maximum Fun, ``'asr'`` for machine-generated
+    Whisper transcripts (with ``asr_model`` set to the model id). The default
+    keeps the existing MaxFun ingest path writing ``source='maxfun'`` unchanged.
+    """
     conn.execute(
         """
         INSERT INTO transcripts (episode_id, full_text, source_url,
-                                 fetched_at, has_transcript)
-        VALUES (:eid, :text, :url, :fetched, :has)
+                                 fetched_at, has_transcript, source, asr_model)
+        VALUES (:eid, :text, :url, :fetched, :has, :source, :asr_model)
         ON CONFLICT(episode_id) DO UPDATE SET
             full_text      = excluded.full_text,
             source_url     = excluded.source_url,
             fetched_at     = excluded.fetched_at,
-            has_transcript = excluded.has_transcript
+            has_transcript = excluded.has_transcript,
+            source         = excluded.source,
+            asr_model      = excluded.asr_model
         """,
         {"eid": episode_id, "text": full_text, "url": source_url,
-         "fetched": _now(), "has": 1 if has_transcript else 0},
+         "fetched": _now(), "has": 1 if has_transcript else 0,
+         "source": source, "asr_model": asr_model},
     )
     set_has_transcript(conn, episode_id, has_transcript)
 
@@ -226,13 +267,89 @@ def coverage_stats(conn: sqlite3.Connection) -> dict:
 
 def episode_has_stored_transcript(conn: sqlite3.Connection,
                                   episode_id: str) -> bool:
-    """True if we already fetched a transcript body for this episode."""
+    """True if we already fetched a transcript body for this episode.
+
+    Provenance-agnostic: a non-empty transcript body of EITHER source
+    (``maxfun`` or ``asr``) counts, so the ASR backfill skips anything already
+    covered by an official transcript or a prior ASR run (resumable).
+    """
     row = conn.execute(
         "SELECT has_transcript FROM transcripts "
         "WHERE episode_id = ? AND full_text IS NOT NULL AND full_text != ''",
         (episode_id,),
     ).fetchone()
     return bool(row and row["has_transcript"])
+
+
+def episode_asr_done(conn: sqlite3.Connection, episode_id: str) -> bool:
+    """True if the episode is already finished from the ASR backfill's view.
+
+    An episode is "done" for ASR either because it has a stored transcript body
+    of any source (``maxfun`` or ``asr``) OR because ASR has already been
+    attempted on it — including a sub-threshold run that stored only a
+    ``source='asr'`` no-body sentinel. This mirrors, row-for-row, the exclusion
+    predicate in :func:`episodes_needing_transcript`, so the work-queue and the
+    in-loop skip guard in :func:`jjho.data.asr.transcribe_missing` agree: a
+    genuinely-short episode ASR already tried is never re-downloaded /
+    re-transcribed on a resumed (or same) run.
+
+    Deliberately distinct from :func:`episode_has_stored_transcript` (which is
+    body-only and still used by the MaxFun scraper) so MaxFun behavior — which
+    must keep re-trying MaxFun-gap sentinels — is unchanged.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM transcripts WHERE episode_id = ? "
+        "  AND ((full_text IS NOT NULL AND full_text != '') "
+        "       OR source = 'asr') "
+        "LIMIT 1",
+        (episode_id,),
+    ).fetchone()
+    return row is not None
+
+
+def episodes_needing_transcript(conn: sqlite3.Connection,
+                                limit: int | None = None) -> list[dict]:
+    """Numbered episodes with an ``audio_url`` that still need ASR — the backfill
+    work queue, newest-first.
+
+    An episode qualifies only when it has NO transcript row that either holds a
+    non-empty body (maxfun or asr) OR records a prior ASR attempt
+    (``source='asr'``). So an episode ASR already tried — even one whose output
+    was too short to store (a ``source='asr'`` no-body sentinel) — is EXCLUDED,
+    making the batch truly resumable and stopping a genuinely-short episode from
+    being re-downloaded + re-transcribed forever. A **MaxFun-gap** sentinel
+    (``source='maxfun'``, ``full_text`` NULL — MaxFun published no transcript)
+    does NOT match the predicate, so it remains eligible for ASR to fill.
+
+    Newest-first (``number DESC``) so the most-listened recent gaps fill first.
+    """
+    sql = (
+        "SELECT e.id, e.number, e.title, e.audio_url "
+        "FROM episodes e "
+        "LEFT JOIN transcripts t ON t.episode_id = e.id "
+        "  AND ((t.full_text IS NOT NULL AND t.full_text != '') "
+        "       OR t.source = 'asr') "
+        "WHERE e.number IS NOT NULL "
+        "  AND e.audio_url IS NOT NULL AND e.audio_url != '' "
+        "  AND t.episode_id IS NULL "
+        "ORDER BY e.number DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def transcript_counts_by_source(conn: sqlite3.Connection) -> dict:
+    """``{source: count}`` over transcripts with a non-empty body, plus a
+    ``total`` key — powers the ASR CLI's coverage summary."""
+    rows = conn.execute(
+        "SELECT source, COUNT(*) AS n FROM transcripts "
+        "WHERE full_text IS NOT NULL AND full_text != '' "
+        "GROUP BY source"
+    ).fetchall()
+    out = {r["source"]: r["n"] for r in rows}
+    out["total"] = sum(out.values())
+    return out
 
 
 # ---------------------------------------------------------------------------
