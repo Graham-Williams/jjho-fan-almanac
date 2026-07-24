@@ -45,6 +45,11 @@ def _cache_file(url: str) -> Path:
     return CACHE_DIR / f"{digest}.html"
 
 
+def _cache_file_bin(url: str) -> Path:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    return CACHE_DIR / f"{digest}.bin"
+
+
 def _throttle() -> None:
     global _last_request_at
     elapsed = time.time() - _last_request_at
@@ -87,6 +92,62 @@ def fetch(url: str, *, session: requests.Session | None = None,
             return resp.text, 200
         if resp.status_code == 404:
             cf.write_text("", encoding="utf-8")   # cache the miss (resumable)
+            return None, 404
+        if resp.status_code in (429, 500, 502, 503, 504):
+            wait = backoff
+            ra = resp.headers.get("Retry-After")
+            if ra:
+                try:
+                    wait = max(wait, float(ra))
+                except ValueError:
+                    pass
+            log.warning("HTTP %s on %s — backoff %.1fs (%s/%s)",
+                        resp.status_code, url, wait, attempt, MAX_RETRIES)
+            time.sleep(wait)
+            backoff *= 2
+            continue
+        log.warning("HTTP %s on %s (giving up)", resp.status_code, url)
+        return None, resp.status_code
+    return None, 0
+
+
+def fetch_bytes(url: str, *, session: requests.Session | None = None,
+                force: bool = False) -> tuple[bytes | None, int]:
+    """Return ``(raw_bytes_or_None, status)`` — the binary sibling of :func:`fetch`.
+
+    Mirrors :func:`fetch`'s politeness exactly (the ≥1.1s ``_throttle``, on-disk
+    cache keyed by URL hash but with a ``.bin`` extension, retry/backoff honoring
+    ``Retry-After``, same identified User-Agent, plain-``requests`` HTTP/1.1).
+    Used for transcript **PDFs**, which :func:`fetch` would corrupt by decoding
+    to text. A cached zero-length file means "known miss" and is not refetched.
+    """
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cf = _cache_file_bin(url)
+    if cf.exists() and not force:
+        body = cf.read_bytes()
+        return (body or None, 200 if body else 404)
+
+    sess = session or requests
+    headers = {"User-Agent": USER_AGENT,
+               "Accept": "application/pdf,application/octet-stream,*/*"}
+    backoff = 2.0
+    for attempt in range(1, MAX_RETRIES + 1):
+        _throttle()
+        try:
+            # HTTP/1.1 via plain requests; do not swap in an HTTP/2 client.
+            resp = sess.get(url, headers=headers, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("request error (%s/%s) %s: %s", attempt,
+                        MAX_RETRIES, url, exc)
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+
+        if resp.status_code == 200:
+            cf.write_bytes(resp.content)
+            return resp.content, 200
+        if resp.status_code == 404:
+            cf.write_bytes(b"")                   # cache the miss (resumable)
             return None, 404
         if resp.status_code in (429, 500, 502, 503, 504):
             wait = backoff
