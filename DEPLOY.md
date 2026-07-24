@@ -60,8 +60,8 @@ personal-assistant memory, not here). Sketch:
 
 ```bash
 # TODO placeholder — verify container name + volume mount before running.
-# scp ~/code/jjho-fan-almanac/data/jjho.db graham@<box>:/tmp/jjho.db
-# ssh graham@<box> 'docker cp /tmp/jjho.db jjho-fan-almanac-app-1:/app/data/jjho.db && \
+# scp ~/code/jjho-fan-almanac/data/jjho.db <user>@<box>:/tmp/jjho.db
+# ssh <user>@<box> 'docker cp /tmp/jjho.db jjho-fan-almanac-app-1:/app/data/jjho.db && \
 #                   docker compose -f ~/jjho-fan-almanac/docker-compose.yml restart app'
 ```
 

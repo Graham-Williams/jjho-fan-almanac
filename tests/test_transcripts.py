@@ -12,7 +12,7 @@ import io
 
 import pytest
 
-from jjho.data import db, transcripts
+from jjho.data import db, httpclient, transcripts
 
 from .conftest import seed_episode
 
@@ -224,3 +224,78 @@ def test_build_listing_map_stops_on_genuine_empty(monkeypatch):
     mapping = transcripts.build_listing_map(min_number=0)
     assert mapping == {}
     assert seen["pages"] == 1            # stopped immediately, no retry storm
+
+
+# ---------------------------------------------------------------------------
+# SSRF hardening — find_pdf_transcript_url must only accept genuine
+# https maximumfun.org/wp-content/*.pdf links (host-anchored + urlparse-checked)
+# ---------------------------------------------------------------------------
+
+def _page_with_href(href: str) -> str:
+    return f'<html><body><main><a href="{href}">Download</a></main></body></html>'
+
+
+@pytest.mark.parametrize("bad_url", [
+    "https://evil.com/?x=maximumfun.org/wp-content/a.pdf",
+    "http://169.254.169.254/latest/maximumfun.org/wp-content/a.pdf",
+    "https://internal:8080/proxy/maximumfun.org/wp-content/a.pdf",
+    "https://maximumfun.org.evil.com/wp-content/a.pdf",
+    "http://maximumfun.org/wp-content/a.pdf",   # http, not https
+])
+def test_find_pdf_transcript_url_rejects_ssrf_bypass(bad_url):
+    assert transcripts.find_pdf_transcript_url(_page_with_href(bad_url)) is None
+
+
+@pytest.mark.parametrize("good_url", [
+    ("https://maximumfun.org/wp-content/uploads/2023/05/"
+     "JJHo-Ep.-616_Final.pdf"),
+    "https://www.maximumfun.org/wp-content/x.pdf",
+])
+def test_find_pdf_transcript_url_accepts_genuine(good_url):
+    assert transcripts.find_pdf_transcript_url(_page_with_href(good_url)) == good_url
+
+
+# ---------------------------------------------------------------------------
+# Download size cap — fetch_bytes aborts (returns None) past MAX_PDF_BYTES
+# ---------------------------------------------------------------------------
+
+def test_fetch_bytes_aborts_when_body_exceeds_cap(tmp_path, monkeypatch):
+    # Isolate the on-disk cache so no partial body could ever be written/read.
+    monkeypatch.setattr(httpclient, "CACHE_DIR", tmp_path / "cache")
+
+    class FakeResp:
+        status_code = 200
+        headers: dict[str, str] = {}     # no (honest) Content-Length
+
+        def __init__(self):
+            self.closed = False
+
+        def iter_content(self, chunk_size=None):
+            # Stream chunks summing past the cap; abort must fire mid-stream.
+            chunk = b"\x00" * (1024 * 1024)          # 1 MB
+            emitted = 0
+            while emitted <= httpclient.MAX_PDF_BYTES + 4 * 1024 * 1024:
+                emitted += len(chunk)
+                yield chunk
+
+        def close(self):
+            self.closed = True
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            assert kwargs.get("stream") is True
+            assert kwargs.get("allow_redirects") is False
+            return FakeResp()
+
+    # No throttle / sleep in tests.
+    monkeypatch.setattr(httpclient, "_throttle", lambda: None)
+
+    body, status = httpclient.fetch_bytes(
+        "https://maximumfun.org/wp-content/uploads/big.pdf",
+        session=FakeSession())
+
+    assert body is None                              # aborted, nothing returned
+    # And the aborted download was NOT cached.
+    cache_bin = httpclient._cache_file_bin(
+        "https://maximumfun.org/wp-content/uploads/big.pdf")
+    assert not cache_bin.exists()

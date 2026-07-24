@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -39,14 +40,23 @@ LISTING_URL = ("https://maximumfun.org/transcripts/judge-john-hodgman/"
 MAX_LISTING_PAGES = 120          # safety cap (~12 links/page, ~760 episodes)
 MIN_TRANSCRIPT_CHARS = 800       # below this we treat a page as "not a real transcript"
 LISTING_PAGE_RETRIES = 3         # transient-fetch retries before skipping a page
+# Extraction caps — bound the work a single (possibly hostile) PDF can impose.
+MAX_PDF_PAGES = 400              # never iterate more than this many PDF pages
+MAX_PDF_TEXT_CHARS = 3_000_000  # truncate extracted text to this ceiling
 
 _EP_IN_URL = re.compile(r"ep-(\d+)", re.IGNORECASE)
 # A downloadable-PDF transcript link: an ``.pdf`` under Maximum Fun's uploads.
 # (~25 episodes, mostly 2023-era, publish the transcript as a PDF, not inline
 # HTML — the page's <main> is only a "Download transcript (pdf)" stub.)
+# SSRF-hardened: anchor the HOST directly (https + maximumfun.org/wp-content/),
+# so a match can't START on an attacker-controlled host that merely mentions
+# "maximumfun.org" in a query/path (e.g. ``https://evil.com/?x=maximumfun.org/
+# wp-content/a.pdf`` or ``http://169.254.169.254/latest/maximumfun.org/...``).
 _PDF_HREF = re.compile(
-    r"https?://[^\s\"']*maximumfun\.org/wp-content/[^\s\"']*\.pdf",
+    r"https://(?:www\.)?maximumfun\.org/wp-content/[^\s\"']*\.pdf",
     re.IGNORECASE)
+# Allowed hosts for a PDF transcript fetch (defensive urlparse check below).
+_PDF_ALLOWED_HOSTS = {"maximumfun.org", "www.maximumfun.org"}
 
 
 def _fetch_listing_page(page: int) -> str | None:
@@ -138,9 +148,25 @@ def find_pdf_transcript_url(html: str) -> str | None:
     real payload is an ``<a href>`` to a ``maximumfun.org/wp-content/…/*.pdf``.
     We match the href directly (regex over the raw HTML) so a missing/rebuilt
     ``<main>`` doesn't hide it.
+
+    SSRF-hardened: the regex anchors the host, and — belt-and-suspenders — the
+    matched URL is re-parsed with :func:`urllib.parse.urlparse` and only
+    returned if it is ``https://`` to an allowed maximumfun.org host with a
+    ``/wp-content/`` path ending in ``.pdf``. Anything else returns ``None`` so
+    a crafted link can never steer :func:`fetch_bytes` at an internal/other host.
     """
     m = _PDF_HREF.search(html)
-    return m.group(0) if m else None
+    if not m:
+        return None
+    url = m.group(0)
+    parsed = urlparse(url)
+    if (parsed.scheme == "https"
+            and (parsed.hostname or "").lower() in _PDF_ALLOWED_HOSTS
+            and parsed.path.startswith("/wp-content/")
+            and parsed.path.lower().endswith(".pdf")):
+        return url
+    log.warning("rejecting non-conforming PDF transcript URL: %s", url)
+    return None
 
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
@@ -158,13 +184,23 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
         return ""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        pages = [(page.extract_text() or "") for page in reader.pages]
+        # Cap page count so a PDF with pathologically many pages can't pin the
+        # worker. (A pypdf *hang* on a single page can't be caught here — the
+        # byte cap in fetch_bytes is the primary mitigation; this bounds the
+        # page-count/text dimensions.)
+        pages = [(page.extract_text() or "")
+                 for page in reader.pages[:MAX_PDF_PAGES]]
     except Exception as exc:  # pypdf raises a variety of parse errors
         log.warning("pypdf failed to parse transcript PDF (%d bytes): %s",
                     len(pdf_bytes), exc)
         return ""
     text = "\n\n".join(p.strip() for p in pages if p and p.strip())
-    return re.sub(r"[ \t]+", " ", text).strip()
+    text = re.sub(r"[ \t]+", " ", text).strip()
+    if len(text) > MAX_PDF_TEXT_CHARS:
+        log.warning("PDF text (%d chars) exceeds cap — truncating to %d",
+                    len(text), MAX_PDF_TEXT_CHARS)
+        text = text[:MAX_PDF_TEXT_CHARS]
+    return text
 
 
 def _target_episodes(conn, limit: int | None) -> list[dict]:
