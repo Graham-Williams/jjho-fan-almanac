@@ -110,32 +110,43 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
     tolerant JSON parsing, graceful degradation). Flask-free/importable.
   - `web/templates/` — `base.html` (courtroom shell, theme-aware, CSP-safe
     system font stacks), `index.html`, `login.html`, `episodes.html` (The
-    Docket browser).
+    Docket browser), `search.html` (Super Search), and `_macros.html` — the
+    shared **`transcript_badge`** macro (transcript-provenance labeling, below).
   - `web/static/js/episodes.js` — instant client-side docket filter
     (progressive enhancement; the page also filters server-side via `?q=`).
     Served from `/static` because the CSP forbids inline scripts.
 - Package `jjho/data/` — the ingest pipeline:
   - `db.py` — SQLite connection + schema (`meta`, `episodes`, `transcripts`),
     idempotent UPSERTs, read helpers. DB path: `data/jjho.db` (override
-    `JJHO_DB`; data dir override `JJHO_DATA`). WAL, FK on.
+    `JJHO_DB`; data dir override `JJHO_DATA`). WAL, FK on. **Schema v2** added
+    `transcripts.source` (`'maxfun'`|`'asr'`) + `asr_model` for transcript
+    provenance — an idempotent PRAGMA-guarded `ALTER TABLE` migration in
+    `init_schema` that backfills legacy rows to `source='maxfun'` (see the
+    two-tier transcript model below).
   - `rss.py` — feedparser spine ingest (guid id, `itunes:episode` number,
     title, pub date, blurb, audio + listen URL).
   - `wikipedia.py` — scrapes both episode-list pages; enriches guest bailiff +
     dispute. **Merged by normalized TITLE, not number** — RSS `itunes:episode`
     and Wikipedia's `No.` diverge (~2 ahead through the back catalog).
-  - `transcripts.py` — polite MaxFun scraper (crawls the paginated listing to
-    map `ep number → transcript URL`, extracts the `<p>` body from `<main>`).
-    **PDF fallback:** ~25 episodes (mostly 2023-era) publish the transcript as a
-    downloadable PDF, not inline HTML — the page's `<main>` is only a "Download
-    transcript (pdf)" stub. When the inline text is sub-threshold and the page
-    carries a `maximumfun.org/wp-content/…/*.pdf` link, the PDF is fetched
-    (`fetch_bytes`) and parsed with **pypdf** (`extract_pdf_text`, guarded — a
-    corrupt PDF stores `has_transcript=0`, never crashes); the PDF URL becomes
-    the transcript's `source_url`. **Listing-crawl hardening:**
-    `build_listing_map` distinguishes a genuine end-of-listing (a valid page
-    with zero links) from a transient fetch failure (retry, then skip the page
-    and keep crawling) — the earlier `if not html: break` aborted the whole
-    newest-first crawl on one flaky page (the 189-vs-214 non-determinism).
+  - `transcripts.py` — **Tier 1** polite MaxFun scraper (crawls the paginated
+    listing to map `ep number → transcript URL`, extracts the `<p>` body from
+    `<main>`). Writes `source='maxfun'`. **PDF fallback:** ~25 episodes (mostly
+    2023-era) publish the transcript as a downloadable PDF, not inline HTML —
+    the page's `<main>` is only a "Download transcript (pdf)" stub. When the
+    inline text is sub-threshold and the page carries a
+    `maximumfun.org/wp-content/…/*.pdf` link, the PDF is fetched (`fetch_bytes`)
+    and parsed with **pypdf** (`extract_pdf_text`, guarded — a corrupt PDF
+    stores `has_transcript=0`, never crashes); the PDF URL becomes the
+    transcript's `source_url`. **Listing-crawl hardening:** `build_listing_map`
+    distinguishes a genuine end-of-listing (a valid page with zero links) from a
+    transient fetch failure (retry, then skip the page and keep crawling) — the
+    earlier `if not html: break` aborted the whole newest-first crawl on one
+    flaky page (the 189-vs-214 non-determinism).
+  - `asr.py` — **Tier 2** local Whisper transcription. Stream-downloads the
+    episode mp3, runs MLX Whisper (`mlx-community/whisper-large-v3-turbo`),
+    stores the text with `source='asr'` + `asr_model`, and **deletes the temp
+    audio immediately** (disk is tight — never accumulate mp3s). Resumable +
+    idempotent; run `python -m jjho.data.asr [--limit N] [--model ID]`.
   - `httpclient.py` — shared polite cached HTTP (≥1 req/s, on-disk cache under
     `data/cache/`, identified UA, HTTP/1.1, backoff honoring `Retry-After`).
     `fetch()` returns decoded text (HTML, `<hash>.html` cache); **`fetch_bytes()`**
@@ -153,14 +164,38 @@ the Docker image.
 
 - **Episode spine:** podcast RSS (`feeds.simplecast.com/q8x9cVws`) + Wikipedia
   episode tables. Complete, cheap. Powers the episode list + cheap search.
-- **Transcript layer:** polite, rate-limited, disk-cached scraping of Maximum
-  Fun transcripts (`maximumfun.org/transcripts/judge-john-hodgman/…`). Powers
-  deep search; **coverage is partial** — a hard caveat to surface in-app. Only
-  source for who-won. **Honest coverage reality:** transcripts exist only from
-  ~**episode #385** onward (1–384 were never transcribed); the **true ceiling is
-  ~214 transcripts** (of 785 numbered) and the `--all` backfill reaches it —
-  including the ~25 PDF-only episodes via the PDF-extraction path. The newest
-  handful lag (production delay). Strong recent, patchier old.
+- **Transcript layer — two tiers, distinguished by `transcripts.source`:**
+  - **Tier 1 (`maxfun`, ~214 eps, ep 385+):** the official *human* transcripts,
+    politely scraped from Maximum Fun
+    (`maximumfun.org/transcripts/judge-john-hodgman/…`; `transcripts.py`).
+    **Honest coverage reality for MaxFun alone:** official transcripts exist
+    only from ~**episode #385** onward (1–384 were never transcribed by MaxFun);
+    the **true MaxFun ceiling is ~214 transcripts** (of 785 numbered) and the
+    `--all` backfill reaches it — including the ~25 PDF-only episodes via the
+    PDF-extraction path. The newest handful lag (production delay). So MaxFun on
+    its own is *partial* — strong-recent, none-old.
+  - **Tier 2 (`asr`, the rest):** machine-generated transcripts we produce
+    locally with **MLX Whisper** (`mlx-community/whisper-large-v3-turbo`,
+    ~17-20x real-time on Graham's Mac, excellent quality) from the show's own
+    audio (`asr.py`) — closing the ~570 episodes (incl. all of 1–384) MaxFun
+    never transcribed. **With ASR, total transcript coverage reaches ~100%** —
+    the two tiers differ in *kind* (human vs machine), not in whether coverage
+    is complete. **These are machine-generated**, and the UI now labels them
+    honestly: wherever a transcript's content or availability is surfaced (The
+    Docket rows + Super Search result cards), the shared `transcript_badge`
+    macro renders a muted **"🤖 Auto-generated"** pill (tooltip: *"Machine-
+    transcribed with Whisper; may contain errors."*) for `source='asr'` and a
+    subtle **"✓ Official transcript"** marker for `source='maxfun'` — so an ASR
+    transcript is never mistaken for an official one. `source`/`asr_model` are
+    threaded DB→template through `list_episodes`, `spine_for_search`, and
+    `transcripts_for_terms` (all now return `transcript_source` + `asr_model`).
+    Search behavior is unchanged — this is provenance/UX only.
+  - Together they power deep search + who-won. The **ASR batch runs on Graham's
+    Mac, not the box** (Whisper + audio download); the resulting DB is shipped
+    to the box exactly like the MaxFun-scraped data. Design: **stream-download →
+    transcribe → delete the mp3** (a 200 MB byte cap per file, temp audio never
+    kept — disk is tight). Resumable/idempotent (a stored body skips the ep) and
+    per-episode fault-isolated (one failure is logged + skipped, never aborts).
 - When you build the scraper: ≥1s between requests, single-threaded, identified
   User-Agent, backoff on 429/5xx honoring `Retry-After`, on-disk cache, respect
   robots.txt. Never weaken this without explicit approval (mirror taste-twin's
@@ -180,10 +215,19 @@ gunicorn --workers 2 --threads 8 -b 0.0.0.0:8080 "jjho.web:create_app()"
 
 # build the episode index (RSS + Wikipedia -> SQLite; idempotent, ~2s)
 python -m jjho.data.ingest
-# + sample the most-recent transcripts (polite, cached, resumable)
+# + sample the most-recent MaxFun (Tier 1) transcripts (polite, cached, resumable)
 python -m jjho.data.ingest --transcripts --limit 25   # foundation sample
 python -m jjho.data.ingest --transcripts --all        # full backfill (slow)
 python -m jjho.data.ingest --stats                    # coverage summary only
+
+# Tier 2 — self-transcribe the episodes MaxFun never covered, via local Whisper.
+# Runs on Graham's MAC ONLY (needs mlx_whisper + ffmpeg + the cached model);
+# resumable — safe to Ctrl-C and re-run; stream-downloads + deletes each mp3.
+.venv/bin/python -m jjho.data.asr            # full missing backfill (~570 eps, hours)
+.venv/bin/python -m jjho.data.asr --limit 1  # smoke test / one newest gap
+.venv/bin/python -m jjho.data.asr --model <hf-repo-id>   # override the model
+# ~17-20x real-time; prints a per-source coverage summary at the end. After a
+# run, ship data/jjho.db to the box like the MaxFun data.
 ```
 
 Deps for the pipeline (`feedparser`, `requests`, `beautifulsoup4`) are already

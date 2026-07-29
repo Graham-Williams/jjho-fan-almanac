@@ -37,8 +37,13 @@ def conn():
 
 
 def seed_episode(conn, *, id, number, title, blurb="", dispute=None,
-                 transcript=None):
-    """Insert one episode (and optionally its transcript) via the real UPSERTs."""
+                 transcript=None, source="maxfun", asr_model=None):
+    """Insert one episode (and optionally its transcript) via the real UPSERTs.
+
+    ``source``/``asr_model`` set the transcript's provenance ('maxfun' official
+    by default, or 'asr' for a machine-generated body) so tests can exercise the
+    auto-generated-vs-official badge.
+    """
     db.upsert_episode_rss(conn, {
         "id": id, "number": number, "title": title,
         "pub_date": "2020-01-01T00:00:00+00:00", "pub_date_raw": "",
@@ -49,7 +54,8 @@ def seed_episode(conn, *, id, number, title, blurb="", dispute=None,
         db.enrich_episode_wikipedia(conn, id, None, dispute)
     if transcript is not None:
         db.upsert_transcript(conn, id, transcript,
-                             "https://maximumfun.org/t/%s" % id, True)
+                             "https://maximumfun.org/t/%s" % id, True,
+                             source=source, asr_model=asr_model)
     conn.commit()
 
 
