@@ -18,9 +18,12 @@
     {%- if source == 'asr' -%}
       <span class="pill asr"
             title="Machine-transcribed with Whisper; may contain errors.">🤖&nbsp;Auto-generated</span>
-    {%- else -%}
+    {%- elif source == 'maxfun' -%}
       <span class="pill official"
             title="Official transcript published by Maximum Fun.">✓&nbsp;Official transcript</span>
+    {%- else -%}
+      {#- Unknown/unset provenance: never claim "official" — the honest default is a neutral marker. -#}
+      <span class="pill" title="Transcript on file.">Transcript</span>
     {%- endif -%}
   {%- else -%}
     <span class="pill none"
