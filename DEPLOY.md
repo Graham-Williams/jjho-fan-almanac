@@ -32,3 +32,43 @@ docker compose ps            # healthcheck hits /healthz
 
 No staging instance (like todoist-points / taste-twin). Preview a feature branch
 by deploying it directly onto the box/URL if needed, then realign to `main`.
+
+## On-demand data refresh (issue #6)
+
+The episode index + transcripts (`data/jjho.db`) are re-derivable public data,
+**not** committed (gitignored) and **not** backed up. When they need refreshing
+(new episodes aired, or to backfill more transcripts):
+
+> **Run the scrape on Graham's Mac, NOT on the box.** Maximum Fun sits behind
+> Cloudflare bot-management that challenges the box's datacenter IP (confirmed —
+> same issue taste-twin hit with Letterboxd). The Mac's residential IP is not
+> challenged. The box only *hosts* the DB; the Mac *generates* it.
+
+Recipe (on the Mac, in this repo):
+
+```bash
+cd ~/code/jjho-fan-almanac
+.venv/bin/python -m jjho.data.ingest                    # rebuild spine (RSS + Wikipedia)
+.venv/bin/python -m jjho.data.ingest --transcripts --all   # full transcript backfill (polite, ~1 min warm cache; cold cache is slower at ≥1 req/s)
+.venv/bin/python -m jjho.data.ingest --stats            # confirm coverage (expect ~214 transcripts)
+```
+
+Then ship the regenerated `data/jjho.db` into the box's Docker volume
+**`jjho-fan-almanac_jjho-data`** (mounted at `/app/data`). **TODO — fill in the
+real box recipe** (do NOT run it blindly; the box box path/host live in
+personal-assistant memory, not here). Sketch:
+
+```bash
+# TODO placeholder — verify container name + volume mount before running.
+# scp ~/code/jjho-fan-almanac/data/jjho.db <user>@<box>:/tmp/jjho.db
+# ssh <user>@<box> 'docker cp /tmp/jjho.db jjho-fan-almanac-app-1:/app/data/jjho.db && \
+#                   docker compose -f ~/jjho-fan-almanac/docker-compose.yml restart app'
+```
+
+**Refresh cadence: on-demand only.** No cron/systemd timer. Coverage recovers
+the ~25 PDF-only 2023-era episodes and reaches the ~214 ceiling; episodes 1–384
+have no transcript to fetch.
+
+**Future option:** solve the box-side Cloudflare challenge (e.g. a residential
+egress path) so refreshes could run directly on the box and drop the
+Mac-in-the-loop step. Not built — flagged for issue #6.

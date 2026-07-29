@@ -29,10 +29,11 @@ built entirely from public data.
   episode identification (see the *Super Search* section below).
 
 Measured on the real data: **819 feed items** (784 numbered episodes),
-**521 enriched from Wikipedia** (matched by title). Transcript sample: the
-25 most-recent episodes are **4/25** covered (the newest ~14 have no transcript
-yet — production lag); over the 100 most-recent it is **51/100**, and of the
-episodes old enough to be transcribed (≤ ep 768) roughly **59%**.
+**521 enriched from Wikipedia** (matched by title). Transcript coverage: the
+full `--all` backfill stores **214 transcripts** (of 785 numbered) — the true
+ceiling. Transcripts exist only from ~**episode #385** onward (1–384 were never
+transcribed) and the newest handful lag; this includes ~25 PDF-only episodes
+recovered via the PDF-extraction path. See *Data sources* + `DESIGN.md`.
 
 The other three features (the Book of Settled Law, Motifs & Running Bits,
 Justice Statistics) are not built yet; they land on feature branches per the
@@ -124,8 +125,22 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
     and Wikipedia's `No.` diverge (~2 ahead through the back catalog).
   - `transcripts.py` — polite MaxFun scraper (crawls the paginated listing to
     map `ep number → transcript URL`, extracts the `<p>` body from `<main>`).
+    **PDF fallback:** ~25 episodes (mostly 2023-era) publish the transcript as a
+    downloadable PDF, not inline HTML — the page's `<main>` is only a "Download
+    transcript (pdf)" stub. When the inline text is sub-threshold and the page
+    carries a `maximumfun.org/wp-content/…/*.pdf` link, the PDF is fetched
+    (`fetch_bytes`) and parsed with **pypdf** (`extract_pdf_text`, guarded — a
+    corrupt PDF stores `has_transcript=0`, never crashes); the PDF URL becomes
+    the transcript's `source_url`. **Listing-crawl hardening:**
+    `build_listing_map` distinguishes a genuine end-of-listing (a valid page
+    with zero links) from a transient fetch failure (retry, then skip the page
+    and keep crawling) — the earlier `if not html: break` aborted the whole
+    newest-first crawl on one flaky page (the 189-vs-214 non-determinism).
   - `httpclient.py` — shared polite cached HTTP (≥1 req/s, on-disk cache under
     `data/cache/`, identified UA, HTTP/1.1, backoff honoring `Retry-After`).
+    `fetch()` returns decoded text (HTML, `<hash>.html` cache); **`fetch_bytes()`**
+    is its binary sibling for PDFs — identical politeness, `<hash>.bin` cache,
+    returns raw `bytes` (never decode a PDF through `fetch()`).
   - `ingest.py` — the CLI (`python -m jjho.data.ingest`).
 
 **Data caveat — the SQLite DB and scrape caches live under `data/` and are
@@ -140,8 +155,12 @@ the Docker image.
   episode tables. Complete, cheap. Powers the episode list + cheap search.
 - **Transcript layer:** polite, rate-limited, disk-cached scraping of Maximum
   Fun transcripts (`maximumfun.org/transcripts/judge-john-hodgman/…`). Powers
-  deep search; **coverage is partial** (strong recent, patchy old/live) — a
-  hard caveat to surface in-app. Only source for who-won.
+  deep search; **coverage is partial** — a hard caveat to surface in-app. Only
+  source for who-won. **Honest coverage reality:** transcripts exist only from
+  ~**episode #385** onward (1–384 were never transcribed); the **true ceiling is
+  ~214 transcripts** (of 785 numbered) and the `--all` backfill reaches it —
+  including the ~25 PDF-only episodes via the PDF-extraction path. The newest
+  handful lag (production delay). Strong recent, patchier old.
 - When you build the scraper: ≥1s between requests, single-threaded, identified
   User-Agent, backoff on 429/5xx honoring `Retry-After`, on-disk cache, respect
   robots.txt. Never weaken this without explicit approval (mirror taste-twin's
