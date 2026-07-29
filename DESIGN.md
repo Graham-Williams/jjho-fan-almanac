@@ -94,9 +94,9 @@ Two layers: a cheap complete **index** (the spine) and an expensive partial
   - **Runs on Graham's Mac, not the box** (Whisper + the ~570 audio downloads);
     the resulting `data/jjho.db` is shipped to the box like the MaxFun data.
     `.venv/bin/python -m jjho.data.asr [--limit N] [--model ID]`.
-  - **Honesty:** ASR transcripts are **machine-generated** — the UI must label
-    them (e.g. "auto-transcribed") wherever `source='asr'`. The `source` /
-    `asr_model` columns exist now; the visible label is a follow-up.
+  - **Honesty (SHIPPED):** ASR transcripts are **machine-generated** and the UI
+    labels them wherever `source='asr'` — see *Transcript-provenance labeling*
+    below.
 - **Powers:** deep Super Search + who-won extraction.
 
 ### ⚠️ Coverage caveat (surface this in-app too)
@@ -106,6 +106,29 @@ approximation (occasional mishearings, no speaker labels). In the UI, keep the
 provenance visible — an "auto-transcribed" marker on `source='asr'` episodes —
 so a user knows an ASR transcript is best-effort, not authoritative, and frame
 any residual gap as a *coverage gap*, not a broken search.
+
+### Transcript-provenance labeling (SHIPPED — `feature/asr-transcripts`)
+So a machine transcript is never mistaken for an official one, every surface
+that shows a transcript's content or availability renders a small provenance
+badge via the shared Jinja macro **`transcript_badge`** (`templates/_macros.html`):
+- **`source='asr'`** → a muted **"🤖 Auto-generated"** pill (`.pill.asr`,
+  secondary/muted color, dashed border, `cursor: help`) with an accessible
+  `title` tooltip: *"Machine-transcribed with Whisper; may contain errors."*
+- **`source='maxfun'`** → a subtle **"✓ Official transcript"** marker
+  (`.pill.official`, bottle-green, tooltip *"Official transcript published by
+  Maximum Fun."*).
+- **no transcript body** → the existing muted **"No transcript"** coverage-gap
+  marker.
+
+**Surfaces:** The Docket rows (`episodes.html`) and Super Search result cards
+(`search.html`, cheap + deep tiers). **Threading:** `list_episodes`,
+`spine_for_search`, and `transcripts_for_terms` all return
+`transcript_source` + `asr_model` (LEFT JOIN to the transcript row, gated to a
+non-empty body); the route passes the dicts straight to the templates. The badge
+text/tooltips are static; `source`/`asr_model` are a controlled DB vocabulary
+rendered through Jinja autoescaping (no `|safe` on any dynamic value). Search
+ranking/behavior is **unchanged** — this is provenance/UX only. The Docket's
+coverage note doubles as the badge legend.
 
 ### ⚠️ Who-won / stats caveat
 **No source records episode outcomes** — they exist only in the audio.

@@ -242,18 +242,25 @@ def list_episodes(conn: sqlite3.Connection, q: str | None = None) -> list[dict]:
     no-JS path; the page also filters client-side). Episodes with no publish
     date sort last.
     """
+    # LEFT JOIN the transcript row (only when it holds a real body) to surface
+    # provenance — ``transcript_source`` ('maxfun'|'asr') + ``asr_model`` — for
+    # the honest auto-generated-vs-official badge. episode_id is a PRIMARY KEY,
+    # so at most one row joins (no fan-out).
     sql = (
-        "SELECT id, number, title, pub_date, pub_date_raw, blurb, "
-        "       listen_url, audio_url, guest_bailiff, has_transcript "
-        "FROM episodes "
+        "SELECT e.id, e.number, e.title, e.pub_date, e.pub_date_raw, e.blurb, "
+        "       e.listen_url, e.audio_url, e.guest_bailiff, e.has_transcript, "
+        "       t.source AS transcript_source, t.asr_model AS asr_model "
+        "FROM episodes e "
+        "LEFT JOIN transcripts t ON t.episode_id = e.id "
+        "     AND t.full_text IS NOT NULL AND t.full_text != '' "
     )
     params: tuple = ()
     if q:
         like = f"%{q.strip()}%"
-        sql += ("WHERE title LIKE ? COLLATE NOCASE "
-                "OR blurb LIKE ? COLLATE NOCASE ")
+        sql += ("WHERE e.title LIKE ? COLLATE NOCASE "
+                "OR e.blurb LIKE ? COLLATE NOCASE ")
         params = (like, like)
-    sql += "ORDER BY (pub_date IS NULL), pub_date DESC, number DESC"
+    sql += "ORDER BY (e.pub_date IS NULL), e.pub_date DESC, e.number DESC"
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
@@ -377,11 +384,14 @@ def spine_for_search(conn: sqlite3.Connection) -> list[dict]:
     bailiff, transcript flag, date). Ordered by episode number (specials last).
     """
     rows = conn.execute(
-        "SELECT id, number, title, blurb, wiki_dispute, listen_url, "
-        "       audio_url, guest_bailiff, has_transcript, pub_date, "
-        "       pub_date_raw "
-        "FROM episodes "
-        "ORDER BY (number IS NULL), number"
+        "SELECT e.id, e.number, e.title, e.blurb, e.wiki_dispute, "
+        "       e.listen_url, e.audio_url, e.guest_bailiff, e.has_transcript, "
+        "       e.pub_date, e.pub_date_raw, "
+        "       t.source AS transcript_source, t.asr_model AS asr_model "
+        "FROM episodes e "
+        "LEFT JOIN transcripts t ON t.episode_id = e.id "
+        "     AND t.full_text IS NOT NULL AND t.full_text != '' "
+        "ORDER BY (e.number IS NULL), e.number"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -443,7 +453,8 @@ def transcripts_for_terms(conn: sqlite3.Connection, terms: list[str],
     sql = (
         "SELECT e.id, e.number, e.title, e.blurb, e.wiki_dispute, "
         "       e.listen_url, e.audio_url, e.guest_bailiff, "
-        "       e.has_transcript, e.pub_date, e.pub_date_raw, t.full_text "
+        "       e.has_transcript, e.pub_date, e.pub_date_raw, t.full_text, "
+        "       t.source AS transcript_source, t.asr_model AS asr_model "
         "FROM transcripts t JOIN episodes e ON e.id = t.episode_id "
         "WHERE t.full_text IS NOT NULL AND t.full_text != '' "
         f"AND ({like_clauses})"

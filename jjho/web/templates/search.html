@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import transcript_badge %}
 {% block title %}Super Search — The Fan Almanac{% endblock %}
 {% block head %}
 <style>
@@ -49,6 +50,12 @@
           border-radius: 999px; padding: .06rem .55rem; white-space: nowrap; }
   .pill.has { color: var(--bottle);
               border: 1px solid color-mix(in srgb, var(--bottle) 45%, transparent); }
+  .pill.official { color: var(--bottle);
+              border: 1px solid color-mix(in srgb, var(--bottle) 40%, transparent);
+              background: color-mix(in srgb, var(--bottle) 10%, transparent); }
+  .pill.asr { color: var(--muted); border: 1px dashed var(--rule);
+              background: color-mix(in srgb, var(--muted) 8%, transparent);
+              cursor: help; }
   .pill.none { color: var(--muted); border: 1px dashed var(--rule); }
   .escalate { background: var(--panel); border: 1px solid var(--rule);
               border-left: 4px solid var(--bottle); border-radius: 4px;
@@ -157,11 +164,7 @@
           <a href="{{ ep.audio_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
         {% endif %}
         {% if ep.guest_bailiff %}<span class="muted">Guest bailiff: {{ ep.guest_bailiff }}</span>{% endif %}
-        {% if ep.has_transcript %}
-          <span class="pill has" title="Full transcript on file.">Transcript on file</span>
-        {% else %}
-          <span class="pill none" title="No transcript on file — a coverage gap.">No transcript</span>
-        {% endif %}
+        {{ transcript_badge(ep.has_transcript, ep.transcript_source, ep.asr_model) }}
       </div>
     </div>
     {% endfor %}

@@ -109,7 +109,8 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
     tolerant JSON parsing, graceful degradation). Flask-free/importable.
   - `web/templates/` — `base.html` (courtroom shell, theme-aware, CSP-safe
     system font stacks), `index.html`, `login.html`, `episodes.html` (The
-    Docket browser).
+    Docket browser), `search.html` (Super Search), and `_macros.html` — the
+    shared **`transcript_badge`** macro (transcript-provenance labeling, below).
   - `web/static/js/episodes.js` — instant client-side docket filter
     (progressive enhancement; the page also filters server-side via `?q=`).
     Served from `/static` because the CSP forbids inline scripts.
@@ -157,9 +158,17 @@ the Docker image.
     locally with **MLX Whisper** (`mlx-community/whisper-large-v3-turbo`,
     ~17-20x real-time on Graham's Mac, excellent quality) from the show's own
     audio (`asr.py`) — closing the ~570 episodes MaxFun never transcribed, for
-    true ~100% transcript coverage. **These are machine-generated** — surface an
-    honest "auto-transcribed" label in the UI wherever a transcript's
-    `source='asr'` (a follow-up; the `source`/`asr_model` columns exist now).
+    true ~100% transcript coverage. **These are machine-generated**, and the UI
+    now labels them honestly: wherever a transcript's content or availability is
+    surfaced (The Docket rows + Super Search result cards), the shared
+    `transcript_badge` macro renders a muted **"🤖 Auto-generated"** pill
+    (tooltip: *"Machine-transcribed with Whisper; may contain errors."*) for
+    `source='asr'` and a subtle **"✓ Official transcript"** marker for
+    `source='maxfun'` — so an ASR transcript is never mistaken for an official
+    one. `source`/`asr_model` are threaded DB→template through `list_episodes`,
+    `spine_for_search`, and `transcripts_for_terms` (all now return
+    `transcript_source` + `asr_model`). Search behavior is unchanged — this is
+    provenance/UX only.
   - Together they power deep search + who-won. The **ASR batch runs on Graham's
     Mac, not the box** (Whisper + audio download); the resulting DB is shipped
     to the box exactly like the MaxFun-scraped data. Design: **stream-download →

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import transcript_badge %}
 {% block title %}The Docket — The Fan Almanac{% endblock %}
 {% block head %}
 <script defer src="{{ url_for('static', filename='js/episodes.js') }}"></script>
@@ -31,6 +32,12 @@
   .pill.has { color: var(--bottle);
               border: 1px solid color-mix(in srgb, var(--bottle) 45%, transparent);
               background: color-mix(in srgb, var(--bottle) 12%, transparent); }
+  .pill.official { color: var(--bottle);
+              border: 1px solid color-mix(in srgb, var(--bottle) 40%, transparent);
+              background: color-mix(in srgb, var(--bottle) 10%, transparent); }
+  .pill.asr { color: var(--muted); border: 1px dashed var(--rule);
+              background: color-mix(in srgb, var(--muted) 8%, transparent);
+              cursor: help; }
   .pill.none { color: var(--muted); border: 1px dashed var(--rule); }
   .bailiff { color: var(--muted); font-style: italic; }
   #no-results { color: var(--muted); font-style: italic; padding: 1.5rem 0; }
@@ -90,11 +97,7 @@
           <a href="{{ ep.audio_url|safe_url }}" target="_blank" rel="noopener noreferrer">Listen ↗</a>
         {% endif %}
         {% if ep.guest_bailiff %}<span class="bailiff">Guest bailiff: {{ ep.guest_bailiff }}</span>{% endif %}
-        {% if ep.has_transcript %}
-          <span class="pill has" title="Full transcript on file — deep search reaches this case.">Transcript on file</span>
-        {% else %}
-          <span class="pill none" title="No transcript on file yet — a coverage gap, not a bug.">No transcript</span>
-        {% endif %}
+        {{ transcript_badge(ep.has_transcript, ep.transcript_source, ep.asr_model) }}
       </div>
     </li>
     {% endfor %}
@@ -102,12 +105,13 @@
   <p id="no-results" hidden>No cases match that search. Try fewer words.</p>
 
   <p class="coverage-note">
-    ⚖ Transcript coverage is <strong>not complete</strong>. Full transcripts
-    (which power deep, full-text search) are scraped from Maximum Fun and are
-    strongest for recent years, patchier for the older and live episodes — and
-    the very newest episodes are published before their transcript exists. A
-    “No transcript” marker is a <em>coverage gap, not a bug</em>. On file now:
-    {{ stats.with_transcript }} of {{ stats.total }} episodes.
+    ⚖ Transcript coverage is <strong>not complete</strong>. Transcripts power
+    deep, full-text search and come from two sources: <strong>✓ Official</strong>
+    transcripts published by Maximum Fun, and <strong>🤖 Auto-generated</strong>
+    ones machine-transcribed with Whisper (which may contain errors — trust the
+    audio over the text). The very newest episodes are published before either
+    exists. A “No transcript” marker is a <em>coverage gap, not a bug</em>. On
+    file now: {{ stats.with_transcript }} of {{ stats.total }} episodes.
   </p>
 {% endif %}
 {% endblock %}

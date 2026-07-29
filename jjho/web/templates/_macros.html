@@ -1,0 +1,29 @@
+{#
+  Transcript provenance badge — honest labeling of a transcript's origin so a
+  machine-generated (Whisper/ASR) transcript is never mistaken for an official
+  human one. Shared by The Docket (episodes.html) and Super Search results
+  (search.html).
+
+  - source == 'asr'    -> muted "🤖 Auto-generated" badge + a plain-language
+                          tooltip warning it may contain errors.
+  - source == 'maxfun' -> subtle "✓ Official transcript" marker.
+  - no transcript on file -> the existing "No transcript" coverage-gap marker.
+
+  Security: the label + tooltip text are static; ``source``/``asr_model`` come
+  from our own DB (a controlled vocabulary) and still flow through Jinja
+  autoescaping — no ``|safe`` on any dynamic value.
+#}
+{% macro transcript_badge(has_transcript, source, asr_model=None) -%}
+  {%- if has_transcript -%}
+    {%- if source == 'asr' -%}
+      <span class="pill asr"
+            title="Machine-transcribed with Whisper; may contain errors.">🤖&nbsp;Auto-generated</span>
+    {%- else -%}
+      <span class="pill official"
+            title="Official transcript published by Maximum Fun.">✓&nbsp;Official transcript</span>
+    {%- endif -%}
+  {%- else -%}
+    <span class="pill none"
+          title="No transcript on file yet — a coverage gap, not a bug.">No transcript</span>
+  {%- endif -%}
+{%- endmacro %}
