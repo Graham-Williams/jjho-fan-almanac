@@ -29,10 +29,11 @@ built entirely from public data.
   episode identification (see the *Super Search* section below).
 
 Measured on the real data: **819 feed items** (784 numbered episodes),
-**521 enriched from Wikipedia** (matched by title). Transcript sample: the
-25 most-recent episodes are **4/25** covered (the newest ~14 have no transcript
-yet — production lag); over the 100 most-recent it is **51/100**, and of the
-episodes old enough to be transcribed (≤ ep 768) roughly **59%**.
+**521 enriched from Wikipedia** (matched by title). Transcript coverage: the
+full `--all` backfill stores **214 transcripts** (of 785 numbered) — the true
+ceiling. Transcripts exist only from ~**episode #385** onward (1–384 were never
+transcribed) and the newest handful lag; this includes ~25 PDF-only episodes
+recovered via the PDF-extraction path. See *Data sources* + `DESIGN.md`.
 
 The other three features (the Book of Settled Law, Motifs & Running Bits,
 Justice Statistics) are not built yet; they land on feature branches per the
@@ -129,7 +130,18 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
     and Wikipedia's `No.` diverge (~2 ahead through the back catalog).
   - `transcripts.py` — **Tier 1** polite MaxFun scraper (crawls the paginated
     listing to map `ep number → transcript URL`, extracts the `<p>` body from
-    `<main>`). Writes `source='maxfun'`.
+    `<main>`). Writes `source='maxfun'`. **PDF fallback:** ~25 episodes (mostly
+    2023-era) publish the transcript as a downloadable PDF, not inline HTML —
+    the page's `<main>` is only a "Download transcript (pdf)" stub. When the
+    inline text is sub-threshold and the page carries a
+    `maximumfun.org/wp-content/…/*.pdf` link, the PDF is fetched (`fetch_bytes`)
+    and parsed with **pypdf** (`extract_pdf_text`, guarded — a corrupt PDF
+    stores `has_transcript=0`, never crashes); the PDF URL becomes the
+    transcript's `source_url`. **Listing-crawl hardening:** `build_listing_map`
+    distinguishes a genuine end-of-listing (a valid page with zero links) from a
+    transient fetch failure (retry, then skip the page and keep crawling) — the
+    earlier `if not html: break` aborted the whole newest-first crawl on one
+    flaky page (the 189-vs-214 non-determinism).
   - `asr.py` — **Tier 2** local Whisper transcription. Stream-downloads the
     episode mp3, runs MLX Whisper (`mlx-community/whisper-large-v3-turbo`),
     stores the text with `source='asr'` + `asr_model`, and **deletes the temp
@@ -137,6 +149,9 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
     idempotent; run `python -m jjho.data.asr [--limit N] [--model ID]`.
   - `httpclient.py` — shared polite cached HTTP (≥1 req/s, on-disk cache under
     `data/cache/`, identified UA, HTTP/1.1, backoff honoring `Retry-After`).
+    `fetch()` returns decoded text (HTML, `<hash>.html` cache); **`fetch_bytes()`**
+    is its binary sibling for PDFs — identical politeness, `<hash>.bin` cache,
+    returns raw `bytes` (never decode a PDF through `fetch()`).
   - `ingest.py` — the CLI (`python -m jjho.data.ingest`).
 
 **Data caveat — the SQLite DB and scrape caches live under `data/` and are
@@ -150,25 +165,31 @@ the Docker image.
 - **Episode spine:** podcast RSS (`feeds.simplecast.com/q8x9cVws`) + Wikipedia
   episode tables. Complete, cheap. Powers the episode list + cheap search.
 - **Transcript layer — two tiers, distinguished by `transcripts.source`:**
-  - **Tier 1 (`maxfun`, ~214 eps, ep 385+):** the official human transcripts,
+  - **Tier 1 (`maxfun`, ~214 eps, ep 385+):** the official *human* transcripts,
     politely scraped from Maximum Fun
     (`maximumfun.org/transcripts/judge-john-hodgman/…`; `transcripts.py`).
-    Strong-recent/patchy-old on its own.
+    **Honest coverage reality for MaxFun alone:** official transcripts exist
+    only from ~**episode #385** onward (1–384 were never transcribed by MaxFun);
+    the **true MaxFun ceiling is ~214 transcripts** (of 785 numbered) and the
+    `--all` backfill reaches it — including the ~25 PDF-only episodes via the
+    PDF-extraction path. The newest handful lag (production delay). So MaxFun on
+    its own is *partial* — strong-recent, none-old.
   - **Tier 2 (`asr`, the rest):** machine-generated transcripts we produce
     locally with **MLX Whisper** (`mlx-community/whisper-large-v3-turbo`,
     ~17-20x real-time on Graham's Mac, excellent quality) from the show's own
-    audio (`asr.py`) — closing the ~570 episodes MaxFun never transcribed, for
-    true ~100% transcript coverage. **These are machine-generated**, and the UI
-    now labels them honestly: wherever a transcript's content or availability is
-    surfaced (The Docket rows + Super Search result cards), the shared
-    `transcript_badge` macro renders a muted **"🤖 Auto-generated"** pill
-    (tooltip: *"Machine-transcribed with Whisper; may contain errors."*) for
-    `source='asr'` and a subtle **"✓ Official transcript"** marker for
-    `source='maxfun'` — so an ASR transcript is never mistaken for an official
-    one. `source`/`asr_model` are threaded DB→template through `list_episodes`,
-    `spine_for_search`, and `transcripts_for_terms` (all now return
-    `transcript_source` + `asr_model`). Search behavior is unchanged — this is
-    provenance/UX only.
+    audio (`asr.py`) — closing the ~570 episodes (incl. all of 1–384) MaxFun
+    never transcribed. **With ASR, total transcript coverage reaches ~100%** —
+    the two tiers differ in *kind* (human vs machine), not in whether coverage
+    is complete. **These are machine-generated**, and the UI now labels them
+    honestly: wherever a transcript's content or availability is surfaced (The
+    Docket rows + Super Search result cards), the shared `transcript_badge`
+    macro renders a muted **"🤖 Auto-generated"** pill (tooltip: *"Machine-
+    transcribed with Whisper; may contain errors."*) for `source='asr'` and a
+    subtle **"✓ Official transcript"** marker for `source='maxfun'` — so an ASR
+    transcript is never mistaken for an official one. `source`/`asr_model` are
+    threaded DB→template through `list_episodes`, `spine_for_search`, and
+    `transcripts_for_terms` (all now return `transcript_source` + `asr_model`).
+    Search behavior is unchanged — this is provenance/UX only.
   - Together they power deep search + who-won. The **ASR batch runs on Graham's
     Mac, not the box** (Whisper + audio download); the resulting DB is shipped
     to the box exactly like the MaxFun-scraped data. Design: **stream-download →

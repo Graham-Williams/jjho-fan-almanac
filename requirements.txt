@@ -3,4 +3,5 @@ gunicorn>=23.0
 feedparser>=6.0
 requests>=2.32.4
 beautifulsoup4>=4.12
+pypdf>=6.14.2,<7
 anthropic>=0.40

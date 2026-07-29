@@ -79,7 +79,15 @@ Two layers: a cheap complete **index** (the spine) and an expensive partial
   transcripts scraped **politely** (rate-limited, single-threaded, on-disk
   cached, robots-aware — mirror taste-twin's scraping discipline) from **Maximum
   Fun** (`maximumfun.org/transcripts/judge-john-hodgman/…`). Strong-recent /
-  patchy-old on its own.
+  patchy-old on its own — see the coverage caveat below.
+  - **Two body formats:** most transcript pages carry the text inline in the
+    `<p>` tags of `<main>`. ~25 episodes (mostly **2023-era**, plus a few
+    2021–22) instead publish the transcript as a **downloadable PDF** — the
+    page's `<main>` is only a "Download transcript (pdf)" stub. When the inline
+    text is below threshold and the page carries a
+    `maximumfun.org/wp-content/…/*.pdf` link, the PDF is fetched (binary, via
+    `httpclient.fetch_bytes`, same politeness) and parsed with **pypdf**; the
+    PDF URL is recorded as the transcript's `source_url`.
 - **Tier 2 — `asr` (machine transcripts, the remaining ~570 eps):** we
   self-transcribe the show's own audio with **local MLX Whisper**. Model
   `mlx-community/whisper-large-v3-turbo` — the best speed/quality trade-off
@@ -100,12 +108,22 @@ Two layers: a cheap complete **index** (the spine) and an expensive partial
 - **Powers:** deep Super Search + who-won extraction.
 
 ### ⚠️ Coverage caveat (surface this in-app too)
-With Tier 2 ASR, transcript coverage approaches **~100%**, but the two tiers
-differ in kind: Tier 1 is a verified human transcript, Tier 2 is a machine
-approximation (occasional mishearings, no speaker labels). In the UI, keep the
-provenance visible — an "auto-transcribed" marker on `source='asr'` episodes —
-so a user knows an ASR transcript is best-effort, not authoritative, and frame
-any residual gap as a *coverage gap*, not a broken search.
+**MaxFun (Tier 1) alone is NOT 100%.** Official transcripts exist only from
+about **episode #385 onward** — episodes **1–384 genuinely have no MaxFun
+transcript** (Maximum Fun never produced them). Above that floor MaxFun coverage
+is strong for recent years and patchier for the older/live end; the **true
+MaxFun ceiling is ~214 transcripts** (of 785 numbered episodes), and the full
+backfill reaches it (including the ~25 PDF-only episodes via the PDF-extraction
+path). The newest handful lag (production delay).
+
+**With Tier 2 ASR, total transcript coverage approaches ~100%** — the ASR batch
+self-transcribes the ~570 episodes (including all of 1–384) MaxFun never
+covered. The two tiers differ **in kind, not in completeness**: Tier 1 is a
+verified human transcript, Tier 2 is a machine approximation (occasional
+mishearings, no speaker labels). In the UI, keep the provenance visible — an
+"auto-transcribed" marker on `source='asr'` episodes — so a user knows an ASR
+transcript is best-effort, not authoritative, and frame any residual gap as a
+*coverage gap*, not a broken search.
 
 ### Transcript-provenance labeling (SHIPPED — `feature/asr-transcripts`)
 So a machine transcript is never mistaken for an official one, every surface
@@ -159,7 +177,16 @@ The pipeline lives in `jjho/data/` (CLI: `python -m jjho.data.ingest`). Schema
 
 All writes are idempotent UPSERTs; both the MaxFun scraper and the ASR batch are
 resumable (skip episodes already stored — the scraper also disk-caches under
-`data/cache/`).
+`data/cache/`). HTML pages cache as `<hash>.html`; PDF bodies cache as
+`<hash>.bin`.
+
+**Listing-crawl resilience.** `build_listing_map()` walks the paginated
+transcript index newest-first. It distinguishes a **genuine end-of-listing** (a
+validly-fetched page with zero transcript links → stop) from a **transient
+fetch failure** (`html is None` after retries → log + skip that page, keep
+crawling). An earlier `if not html: break` conflated the two, so a single flaky
+page silently dropped every older episode — the source of a non-deterministic
+189-vs-214 backfill. It is now deterministic (bounded by `MAX_LISTING_PAGES`).
 
 **Key finding — merge by TITLE, not number.** The podcast RSS `itunes:episode`
 numbers and Wikipedia's `No.` column **diverge** (Wikipedia counts an early
@@ -171,9 +198,15 @@ numbering stays authoritative for the spine.
 episodes enriched from Wikipedia. Transcript sample — 25 most-recent = 4/25
 (the newest ~14 episodes have no transcript yet: Maximum Fun publishes them on a
 lag); 100 most-recent = 51/100; and ~59% for episodes old enough to be
-transcribed (≤ ep 768). This confirms the coverage caveat and is surfaced in
-The Docket's fine print. **Follow-up:** a background full backfill
-(`--all`, ~760 episodes at ≥1 req/s) once the pipeline is merged.
+transcribed. This confirms the coverage caveat and is surfaced in The Docket's
+fine print.
+
+**Full-backfill coverage (with PDF extraction):** a `--all` run stores
+**214 transcripts** (of 785 numbered episodes) — the true ceiling. That figure
+includes the ~25 PDF-only episodes recovered by the PDF-extraction path; the
+newest handful still lag (Maximum Fun publishes late) and episodes 1–384 have no
+transcript at all. A newest-first re-crawl is now **deterministic** (the listing
+hardening above fixed the earlier 189-vs-214 flakiness).
 
 ## Visual identity / styling
 
