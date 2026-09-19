@@ -86,7 +86,7 @@ _HSTS = "max-age=31536000"
 # whitespace) disables the redirect rather than emitting a malformed/injectable
 # target.
 _HOSTNAME_RE = re.compile(
-    r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"\A(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
 
 _CTRL_RE = re.compile(r"[\x00-\x20\x7f]")

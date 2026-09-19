@@ -219,11 +219,46 @@ def test_no_app_host_means_no_redirect():
     assert resp.status_code == 200
 
 
-def test_malformed_app_host_disables_the_redirect(monkeypatch):
-    monkeypatch.setenv("APP_HOST", "https://evil.example.com/x")
+# The DNS maximum is 253 characters. Both sides of that boundary are pinned:
+# a 253-char host must still work, 254 must not. Built from valid 63-char
+# labels so ONLY the total length can be what rejects the long one.
+_MAX_LEN_HOST = ("a" * 63 + ".") * 3 + "b" * 61      # exactly 253
+_OVERLONG_HOST = ("a" * 63 + ".") * 3 + "b" * 62     # exactly 254
+assert (len(_MAX_LEN_HOST), len(_OVERLONG_HOST)) == (253, 254)
+
+
+@pytest.mark.parametrize("bad_host", [
+    "https://evil.example.com/x",        # scheme + path
+    "jjho.example.com@evil.example",     # WHATWG userinfo -> lands on evil
+    "jjho.example.com:8080",             # port
+    "evil.example.com\r\nX-Injected: 1",  # CRLF -> Werkzeug raises -> 500
+    "jjho-.example.com",                 # trailing-hyphen label
+    "jjho..example.com",                 # empty label
+    _OVERLONG_HOST,                      # 254 chars: one over the DNS maximum
+])
+def test_malformed_app_host_disables_the_redirect(monkeypatch, bad_host):
+    monkeypatch.setenv("APP_HOST", bad_host)
     c = create_app().test_client()
     resp = c.get("/healthz", headers=HTTP)
     assert resp.status_code == 200
+    assert "Location" not in resp.headers
+
+
+def test_app_host_length_boundary_is_exactly_the_dns_maximum(monkeypatch):
+    r"""253 is the DNS maximum, so 253 must work and 254 must not.
+
+    The per-label pattern alone bounds each LABEL but not the total, so this
+    pins the `(?=.{1,253}\Z)` lookahead specifically — without it a host of
+    any length built from valid labels would be accepted.
+    """
+    from jjho.web.app import _HOSTNAME_RE
+    assert _HOSTNAME_RE.fullmatch(_MAX_LEN_HOST)
+    assert not _HOSTNAME_RE.fullmatch(_OVERLONG_HOST)
+
+    monkeypatch.setenv("APP_HOST", _MAX_LEN_HOST)
+    resp = create_app().test_client().get("/healthz", headers=HTTP)
+    assert resp.status_code == 307      # a max-length host still redirects
+    assert resp.headers["Location"] == f"https://{_MAX_LEN_HOST}/healthz"
 
 
 # ---- 3. HSTS ---------------------------------------------------------------
