@@ -260,14 +260,33 @@ mocked — no test makes a real API call.**
   Cloudflare's zone-wide *Always Use HTTPS* already 301s http→https, but that is
   one dashboard toggle away from regressing, so the app does it too:
   - **`_https_redirect` (`before_request`, registered FIRST — before the
-    password gate)** 301s to `https://<APP_HOST><target>`. ⚠️ **It redirects ONLY
-    when `X-Forwarded-Proto` is present and *exactly* `http`.** That header rule
-    IS the exemption list — there are deliberately no per-path exemptions. The
-    compose healthcheck (`urlopen('http://127.0.0.1:8080/healthz')`) and any
-    other in-network probe send no `X-Forwarded-Proto`, so they are untouched;
-    a blanket "scheme is http" rule would 301 the healthcheck and mark the
-    container unhealthy forever. A chained-proxy list value (`http, https`)
-    also fails open.
+    password gate)** 307s to `https://<APP_HOST><target>`. ⚠️ **It redirects ONLY
+    when `X-Forwarded-Proto`, trimmed and case-folded, is *exactly* `http`.**
+    That header rule IS the exemption list — there are deliberately no per-path
+    exemptions. The compose healthcheck
+    (`urlopen('http://127.0.0.1:8080/healthz')`) and any other in-network probe
+    send no `X-Forwarded-Proto`, so they are untouched; a blanket "scheme is
+    http" rule would redirect the healthcheck and mark the container unhealthy
+    forever. A chained-proxy list value (`http, https`) also fails open.
+    - ⚠️ **`.strip().lower()` is load-bearing** — URI schemes are
+      case-INSENSITIVE (RFC 3986 §3.1, RFC 9110). The first cut compared
+      case-sensitively and failed in the *dangerous* direction: measured live
+      against gunicorn, `X-Forwarded-Proto: HTTP` was served **200 over plain
+      http**. All five sibling repos normalise the same way. Normalising must
+      NOT start matching the multi-hop `http, https` — there is a test for it.
+  - **The redirect is a `307`, carrying `Cache-Control: no-store` and
+    `Vary: X-Forwarded-Proto`.** Its `Location` is byte-identical to the
+    requested URL, and a `301` with no freshness information is heuristically
+    cacheable *indefinitely* (RFC 9111 §4.2.2). In the exact scenario this
+    feature exists for — the edge's *Always Use HTTPS* regressing — a shared
+    cache could store that self-referential redirect (`/static/*.css|.js` are
+    precisely what Cloudflare caches by default) and replay it to **https**
+    visitors: broken assets, or a loop. A misconfigured `APP_HOST` under a
+    `301` would likewise be sticky in every visitor's browser with no way to
+    recall it. `307` also preserves the method, so a plain-http POST is re-sent
+    over https rather than silently downgraded to a bodiless GET. HSTS already
+    supplies the durable client-side upgrade, so permanence buys nothing.
+    **Do not "restore" the 301.**
   - **The target host is always the configured `APP_HOST` pin, never the
     request's own Host/URL** — reflecting the Host would be an open redirect.
     `APP_HOST` unset or not a bare hostname ⇒ **redirecting is OFF (fail open)**,
@@ -285,6 +304,13 @@ mocked — no test makes a real API call.**
     each hostname owns its own policy, matching the apex landing page. Browsers
     ignore HSTS over plain http (RFC 6797), so sending it unconditionally is
     safe and can't break local dev.
+  - ⚠️ **`before_request` HOOK REGISTRATION ORDER IS LOAD-BEARING.** Flask runs
+    `before_request` hooks in registration order, and the entire security
+    argument for this feature is that `_https_redirect` is defined *above*
+    `_password_gate` in `create_app()` — a plain-http visitor is upgraded
+    before the login form (or any credential) is ever handled in the clear.
+    Do not reorder or reshuffle those hook definitions. Pinned structurally by
+    `test_hook_registration_order_is_load_bearing`.
   - Session cookie stays `Secure` + `HttpOnly` + `SameSite=Lax` (asserted in
     `tests/test_https_enforcement.py`, which also covers all of the above).
 - Cloudflare Access JWT verification is a **deferred** option (env vars

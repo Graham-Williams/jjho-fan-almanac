@@ -4,14 +4,18 @@ The edge already 301s http→https for every hostname, but that is one
 Cloudflare dashboard toggle away from regressing, so the app enforces it
 itself. These are the regression tests for the three load-bearing rules:
 
-1. Redirect **only** when ``X-Forwarded-Proto`` is present and exactly
-   ``http`` — the header rule IS the exemption list, so the in-network
-   healthcheck (which sends no such header) must never be redirected.
+1. Redirect **only** when ``X-Forwarded-Proto``, trimmed and case-folded, is
+   exactly ``http`` — the header rule IS the exemption list, so the in-network
+   healthcheck (which sends no such header) must never be redirected. Schemes
+   are case-insensitive (RFC 3986/9110), so ``HTTP`` must redirect too; a
+   multi-hop ``http, https`` must not.
 2. The target is built from the configured ``APP_HOST`` pin, **never** from
    the request's own Host header (that would be an open redirect), and the
    path + query survive byte-for-byte including percent-encoding.
 3. ``Strict-Transport-Security: max-age=31536000`` on responses — no
    ``includeSubDomains``, no ``preload``.
+4. The redirect is a **307** (method-preserving, not heuristically cacheable)
+   carrying ``Cache-Control: no-store`` + ``Vary: X-Forwarded-Proto``.
 """
 
 from __future__ import annotations
@@ -41,9 +45,9 @@ def _get(client, path, headers=None, host=HOST):
 
 # ---- 1. the redirect fires only on X-Forwarded-Proto: http -----------------
 
-def test_xfp_http_redirects_301_to_https(client):
+def test_xfp_http_redirects_307_to_https(client):
     resp = _get(client, "/episodes", HTTP)
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/episodes"
 
 
@@ -54,8 +58,8 @@ def test_xfp_https_is_not_redirected(client):
 
 def test_no_xfp_header_is_not_redirected(client):
     """The compose healthcheck urlopen()s http://127.0.0.1:8080/healthz with no
-    X-Forwarded-Proto. A blanket "scheme is http" rule would 301 it and mark the
-    container unhealthy forever."""
+    X-Forwarded-Proto. A blanket "scheme is http" rule would redirect it and
+    mark the container unhealthy forever."""
     resp = client.get("/healthz")  # no Host pin either — /healthz is pin-exempt
     assert resp.status_code == 200
     assert resp.json == {"status": "ok"}
@@ -66,10 +70,56 @@ def test_empty_xfp_header_is_not_redirected(client):
     assert resp.status_code == 200
 
 
-def test_xfp_list_value_is_not_redirected(client):
-    """Only an exact "http" redirects; a chained-proxy list value fails open."""
-    resp = _get(client, "/healthz", {"X-Forwarded-Proto": "http, https"})
+@pytest.mark.parametrize("value", ["http, https", "https, http", "HTTP, HTTPS"])
+def test_xfp_list_value_is_not_redirected(client, value):
+    """Only an unambiguous single "http" redirects; a chained-proxy list value
+    fails open — we refuse to guess which hop the visitor was actually on.
+    Normalising case must NOT accidentally start matching these."""
+    resp = _get(client, "/healthz", {"X-Forwarded-Proto": value})
     assert resp.status_code == 200
+    assert "Location" not in resp.headers
+
+
+@pytest.mark.parametrize("value", ["http", "HTTP", "Http", "hTTp", " http",
+                                   "http ", "  HTTP\t"])
+def test_xfp_http_is_matched_case_insensitively_and_trimmed(client, value):
+    """URI schemes are case-INSENSITIVE (RFC 3986 §3.1, RFC 9110).
+
+    The original comparison was case-sensitive and failed in the *dangerous*
+    direction: measured live against gunicorn, ``X-Forwarded-Proto: HTTP`` was
+    served 200 over plain http with no upgrade at all.
+    """
+    resp = _get(client, "/episodes", {"X-Forwarded-Proto": value})
+    assert resp.status_code == 307
+    assert resp.headers["Location"] == f"https://{HOST}/episodes"
+
+
+@pytest.mark.parametrize("value", ["httpx", "xhttp", "ws", " ", "http\x00"])
+def test_near_miss_values_do_not_redirect(client, value):
+    resp = _get(client, "/healthz", {"X-Forwarded-Proto": value})
+    assert resp.status_code == 200
+
+
+# ---- the redirect must not be cacheable ------------------------------------
+
+def test_redirect_is_not_cacheable_and_declares_its_vary(client):
+    """The Location is byte-identical to the request URL, so a cacheable
+    redirect is a trap: a shared cache (Cloudflare caches .css/.js by default)
+    could store it and replay it to https visitors — broken assets, or a loop.
+    The response depends on X-Forwarded-Proto, so it must say so."""
+    resp = _get(client, "/static/css/app.css", HTTP)
+    assert resp.status_code == 307
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.headers["Vary"] == "X-Forwarded-Proto"
+
+
+def test_redirect_preserves_the_method(client):
+    """307, not 301: a plain-http POST is re-sent over https instead of being
+    silently downgraded to a bodiless GET."""
+    resp = client.post("/login", data={"password": "x"},
+                       headers={**HTTP, "Host": HOST})
+    assert resp.status_code == 307
+    assert resp.headers["Location"] == f"https://{HOST}/login"
 
 
 def test_redirect_beats_the_password_gate(monkeypatch):
@@ -81,15 +131,25 @@ def test_redirect_beats_the_password_gate(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET", "x" * 32)
     c = create_app().test_client()
     resp = _get(c, "/episodes", HTTP)
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/episodes"
+
+
+def test_hook_registration_order_is_load_bearing(monkeypatch):
+    """The whole security argument rests on _https_redirect being registered
+    ahead of _password_gate (Flask runs before_request hooks in registration
+    order). Pin it structurally so a reorder fails loudly, not silently."""
+    monkeypatch.setenv("APP_HOST", HOST)
+    names = [f.__name__ for f in create_app().before_request_funcs[None]]
+    assert names[0] == "_https_redirect", names
+    assert names.index("_https_redirect") < names.index("_password_gate")
 
 
 # ---- 2. the target is pinned, and preserved byte-for-byte -----------------
 
 def test_query_string_is_preserved(client):
     resp = _get(client, "/search?q=pop+tart&deep=1", HTTP)
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/search?q=pop+tart&deep=1"
 
 
@@ -99,7 +159,7 @@ def test_percent_encoded_path_and_query_survive_exactly(client):
     ("%26") would be reproduced literally, splitting the parameter."""
     target = "/caf%C3%A9/a%20b?q=x%20y%26z&n=100%25"
     resp = _get(client, target, HTTP)
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}{target}"
 
 
@@ -113,7 +173,7 @@ def test_target_survives_without_raw_uri(client):
     REQUEST_URI still gets a correctly re-encoded target."""
     resp = client.get("/caf%C3%A9/a%20b?q=x%20y", headers={**HTTP, "Host": HOST},
                       environ_overrides={"RAW_URI": None, "REQUEST_URI": None})
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/caf%C3%A9/a%20b?q=x%20y"
 
 
@@ -121,7 +181,7 @@ def test_crafted_host_header_is_not_reflected(client):
     """Open-redirect guard: the Location comes from APP_HOST, never the
     attacker-supplied Host header."""
     resp = _get(client, "/episodes?q=x", HTTP, host="evil.example.com")
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     loc = resp.headers["Location"]
     assert loc == f"https://{HOST}/episodes?q=x"
     assert "evil.example.com" not in loc
@@ -133,7 +193,7 @@ def test_protocol_relative_target_is_not_reflected(client):
     client itself re-parses a "//host/path" argument as an absolute URL.)"""
     resp = client.get("/", headers={**HTTP, "Host": HOST},
                       environ_overrides={"RAW_URI": "//evil.example.com/x"})
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/"
 
 
@@ -146,7 +206,7 @@ def test_backslash_target_is_not_reflected(client):
 def test_control_character_in_raw_uri_cannot_split_the_header(client):
     resp = client.get("/", headers={**HTTP, "Host": HOST},
                       environ_overrides={"RAW_URI": "/x\r\nSet-Cookie: a=b"})
-    assert resp.status_code == 301
+    assert resp.status_code == 307
     assert resp.headers["Location"] == f"https://{HOST}/"
     assert "Set-Cookie" not in resp.headers
 

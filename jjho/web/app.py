@@ -194,19 +194,49 @@ def create_app() -> Flask:
 
         Only the Cloudflare tunnel reaches this container, and cloudflared
         forwards the visitor's scheme as ``X-Forwarded-Proto``. Redirect ONLY
-        when that header is present and *exactly* ``http`` — the header rule
-        IS the exemption list. In particular the compose healthcheck
-        (``urlopen('http://127.0.0.1:8080/healthz')``) sends no such header,
-        so it is untouched; no per-path exemption is needed or wanted.
+        when that header, trimmed and case-folded, is *exactly* ``http`` — the
+        header rule IS the exemption list. In particular the compose
+        healthcheck (``urlopen('http://127.0.0.1:8080/healthz')``) sends no
+        such header, so it is untouched; no per-path exemption is needed or
+        wanted.
+
+        URI schemes are case-INSENSITIVE (RFC 3986 §3.1, RFC 9110), hence
+        ``.strip().lower()``. A case-sensitive ``!= "http"`` fails in the
+        dangerous direction — ``X-Forwarded-Proto: HTTP`` was measured being
+        served 200 over plain http. A multi-hop value ("http, https") still
+        does NOT match: we only act on an unambiguous single scheme.
+
+        307, not 301: the emitted ``Location`` is byte-identical to the
+        requested URL, and a 301 with no freshness information is
+        heuristically cacheable *indefinitely* (RFC 9111 §4.2.2). If the
+        edge's "Always Use HTTPS" regressed, a shared cache could store this
+        self-referential redirect — ``/static/*.css|.js`` are exactly what
+        Cloudflare caches by default — and replay it to https visitors: broken
+        assets, or a loop. A misconfigured APP_HOST under a 301 would likewise
+        be sticky in every visitor's browser with no way to recall it. 307
+        also preserves the method, so a plain-http POST is re-sent over https
+        rather than silently downgraded to a bodiless GET. HSTS already gives
+        the durable client-side upgrade, so permanence buys nothing.
+        ``Cache-Control: no-store`` + ``Vary: X-Forwarded-Proto`` state out
+        loud what the response actually depends on.
         """
         if not https_host:
             return None
-        if request.headers.get("X-Forwarded-Proto") != "http":
+        proto = (request.headers.get("X-Forwarded-Proto") or "").strip().lower()
+        if proto != "http":
             return None
-        return redirect(f"https://{https_host}{_request_target()}", code=301)
+        resp = redirect(f"https://{https_host}{_request_target()}", code=307)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Vary"] = "X-Forwarded-Proto"
+        return resp
 
     @app.before_request
-    def _password_gate():  # runs first; redirects unauth users to /login
+    def _password_gate():
+        # NOT first: ``_https_redirect`` above is registered ahead of this and
+        # therefore runs first, so a plain-http visitor is upgraded before the
+        # login form (or any credential) is ever handled in the clear. That
+        # registration order is LOAD-BEARING — do not reorder these hooks.
+        # Redirects unauthenticated visitors to /login.
         if not password_gate_enabled:
             return None
         path = request.path

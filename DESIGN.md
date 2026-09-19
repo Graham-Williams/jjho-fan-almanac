@@ -240,8 +240,10 @@ Same pattern as the sibling apps (km-tracker / todoist-points / taste-twin) —
   left as a documented, deferred option.)
 - **HTTPS enforced at the origin too** (issue #17, defence in depth behind the
   edge's *Always Use HTTPS*): a `before_request` hook — registered ahead of the
-  password gate — 301s to `https://<APP_HOST><path?query>` when, and only when,
-  `X-Forwarded-Proto` is exactly `http`; every response carries
+  password gate (that order is load-bearing) — **307s** to
+  `https://<APP_HOST><path?query>` with `Cache-Control: no-store` +
+  `Vary: X-Forwarded-Proto`, when and only when `X-Forwarded-Proto` trimmed and
+  case-folded is exactly `http`; every response carries
   `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains`, no
   `preload`). The redirect target is built from the `APP_HOST` pin and from the
   raw request line, never from the request Host or the decoded `full_path`. See
