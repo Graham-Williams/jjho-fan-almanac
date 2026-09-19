@@ -238,6 +238,14 @@ Same pattern as the sibling apps (km-tracker / todoist-points / taste-twin) —
   signed HttpOnly/Secure/SameSite session cookie, per-IP failed-login rate
   limit, `APP_HOST` Origin/CSRF pin. (Cloudflare Access JWT verification is
   left as a documented, deferred option.)
+- **HTTPS enforced at the origin too** (issue #17, defence in depth behind the
+  edge's *Always Use HTTPS*): a `before_request` hook — registered ahead of the
+  password gate — 301s to `https://<APP_HOST><path?query>` when, and only when,
+  `X-Forwarded-Proto` is exactly `http`; every response carries
+  `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains`, no
+  `preload`). The redirect target is built from the `APP_HOST` pin and from the
+  raw request line, never from the request Host or the decoded `full_path`. See
+  the CLAUDE.md security-posture section for the full rules and the traps.
 - **Anthropic API key** via `ANTHROPIC_API_KEY` (source: `claude-api-key` in the
   1Password **Hopper** vault, field `api_key`).
 - No off-box backup needed (state is re-derivable public data).

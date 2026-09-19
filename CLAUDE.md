@@ -256,6 +256,37 @@ mocked — no test makes a real API call.**
   Origin/Referer CSRF check on POSTs.
 - **`Referrer-Policy: same-origin`** (not `no-referrer`) — required so the app's
   own same-origin form POSTs still carry an `Origin` for the CSRF pin.
+- **HTTPS is enforced at the ORIGIN, not just at the edge** (issue #17).
+  Cloudflare's zone-wide *Always Use HTTPS* already 301s http→https, but that is
+  one dashboard toggle away from regressing, so the app does it too:
+  - **`_https_redirect` (`before_request`, registered FIRST — before the
+    password gate)** 301s to `https://<APP_HOST><target>`. ⚠️ **It redirects ONLY
+    when `X-Forwarded-Proto` is present and *exactly* `http`.** That header rule
+    IS the exemption list — there are deliberately no per-path exemptions. The
+    compose healthcheck (`urlopen('http://127.0.0.1:8080/healthz')`) and any
+    other in-network probe send no `X-Forwarded-Proto`, so they are untouched;
+    a blanket "scheme is http" rule would 301 the healthcheck and mark the
+    container unhealthy forever. A chained-proxy list value (`http, https`)
+    also fails open.
+  - **The target host is always the configured `APP_HOST` pin, never the
+    request's own Host/URL** — reflecting the Host would be an open redirect.
+    `APP_HOST` unset or not a bare hostname ⇒ **redirecting is OFF (fail open)**,
+    so local dev and the test suite keep working.
+  - **`request.full_path` must NEVER be used to build the target** — Flask
+    percent-*decodes* `request.path`, so `/a%20b` would be rebuilt as `/a b` and
+    `/a%2Fb` as `/a/b`. `_request_target()` reads the raw request line from
+    `RAW_URI`/`REQUEST_URI` (both gunicorn and werkzeug set it, incl. the test
+    client) and only re-encodes the decoded path as a fallback. It also refuses
+    a `//`- or `/\`-prefixed target and anything with a control character, so
+    the `Location` header can't be split or made to read as another authority.
+  - **`Strict-Transport-Security: max-age=31536000`** on every response
+    (`_security_headers`). **No `includeSubDomains`** (it would commit every
+    sibling app on `graham-williams.com`) and **no `preload`** (irreversible) —
+    each hostname owns its own policy, matching the apex landing page. Browsers
+    ignore HSTS over plain http (RFC 6797), so sending it unconditionally is
+    safe and can't break local dev.
+  - Session cookie stays `Secure` + `HttpOnly` + `SameSite=Lax` (asserted in
+    `tests/test_https_enforcement.py`, which also covers all of the above).
 - Cloudflare Access JWT verification is a **deferred** option (env vars
   documented in `.env.example`), not wired — the shared password is the gate.
 
