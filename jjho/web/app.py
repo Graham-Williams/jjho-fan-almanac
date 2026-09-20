@@ -24,9 +24,10 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import re
 import secrets
 from datetime import timedelta
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from datetime import datetime
 
@@ -73,6 +74,58 @@ _CSP = ("default-src 'self'; style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; "
         "base-uri 'none'; object-src 'none'")
 
+# --- HTTPS enforcement at the ORIGIN (defence in depth behind the tunnel) ----
+#
+# The edge (Cloudflare "Always Use HTTPS") already 301s http->https, but that
+# is one dashboard toggle away from regressing, so the app enforces it too.
+# No includeSubDomains / no preload: each hostname owns its own policy.
+_HSTS = "max-age=31536000"
+
+# APP_HOST must look like a bare hostname before it may be interpolated into a
+# Location header. Anything else (empty, a URL, a value with a slash, ':', or
+# whitespace) disables the redirect rather than emitting a malformed/injectable
+# target.
+_HOSTNAME_RE = re.compile(
+    r"\A(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
+
+_CTRL_RE = re.compile(r"[\x00-\x20\x7f]")
+
+
+def _redirect_host(app_host: str) -> str:
+    """The host the https redirect targets, or "" to disable redirecting.
+
+    Deliberately derived from the configured ``APP_HOST`` pin and NEVER from
+    the request's own Host/URL — reflecting the request host would turn this
+    into an open redirect.
+    """
+    host = (app_host or "").strip()
+    return host if _HOSTNAME_RE.match(host) else ""
+
+
+def _request_target() -> str:
+    """The request target (``path`` + ``?query``) exactly as the client sent it.
+
+    ``request.full_path`` is LOSSY and must not be used here: Flask
+    percent-*decodes* ``request.path``, so ``/a%20b`` would be rebuilt as
+    ``/a b`` and ``/a%2Fb`` as ``/a/b`` — the redirect would silently land the
+    visitor somewhere else. Both gunicorn and werkzeug put the raw request
+    line in ``RAW_URI`` (``REQUEST_URI`` on some servers), so prefer that and
+    only re-encode the decoded path when neither is present.
+    """
+    env = request.environ
+    raw = env.get("RAW_URI") or env.get("REQUEST_URI") or ""
+    if not (raw.startswith("/") and not _CTRL_RE.search(raw)):
+        path = quote(request.path, safe="/")
+        qs = request.query_string.decode("latin-1")
+        raw = f"{path}?{qs}" if qs else path
+    # A target starting with "//" (or the "/\\" browser quirk) would read as a
+    # network location; a control character would split the Location header.
+    if (raw.startswith("//") or raw[:2] == "/\\"
+            or _CTRL_RE.search(raw) or not raw.startswith("/")):
+        return "/"
+    return raw
+
 
 def create_app() -> Flask:
     """App factory. Boots with the shared-password gate + placeholder home."""
@@ -88,6 +141,12 @@ def create_app() -> Flask:
     if not app_host:
         log.warning("APP_HOST not set — Host/Origin pinning disabled "
                     "(local dev mode only).")
+    # The https redirect target is pinned to APP_HOST. Unset/malformed =>
+    # redirecting is OFF (fail open) so local dev and the tests still work.
+    https_host = _redirect_host(app_host)
+    if app_host and not https_host:
+        log.warning("APP_HOST=%r is not a bare hostname — origin http→https "
+                    "redirect DISABLED.", app_host)
 
     # -- app-level shared-password gate (env-gated by APP_PASSWORD) -----------
     app_password = os.environ.get("APP_PASSWORD", "")
@@ -130,7 +189,54 @@ def create_app() -> Flask:
     # -- middleware -----------------------------------------------------------
 
     @app.before_request
-    def _password_gate():  # runs first; redirects unauth users to /login
+    def _https_redirect():
+        """Origin-side http→https. Registered FIRST so it beats the gate.
+
+        Only the Cloudflare tunnel reaches this container, and cloudflared
+        forwards the visitor's scheme as ``X-Forwarded-Proto``. Redirect ONLY
+        when that header, trimmed and case-folded, is *exactly* ``http`` — the
+        header rule IS the exemption list. In particular the compose
+        healthcheck (``urlopen('http://127.0.0.1:8080/healthz')``) sends no
+        such header, so it is untouched; no per-path exemption is needed or
+        wanted.
+
+        URI schemes are case-INSENSITIVE (RFC 3986 §3.1, RFC 9110), hence
+        ``.strip().lower()``. A case-sensitive ``!= "http"`` fails in the
+        dangerous direction — ``X-Forwarded-Proto: HTTP`` was measured being
+        served 200 over plain http. A multi-hop value ("http, https") still
+        does NOT match: we only act on an unambiguous single scheme.
+
+        307, not 301: the emitted ``Location`` is byte-identical to the
+        requested URL, and a 301 with no freshness information is
+        heuristically cacheable *indefinitely* (RFC 9111 §4.2.2). If the
+        edge's "Always Use HTTPS" regressed, a shared cache could store this
+        self-referential redirect — ``/static/*.css|.js`` are exactly what
+        Cloudflare caches by default — and replay it to https visitors: broken
+        assets, or a loop. A misconfigured APP_HOST under a 301 would likewise
+        be sticky in every visitor's browser with no way to recall it. 307
+        also preserves the method, so a plain-http POST is re-sent over https
+        rather than silently downgraded to a bodiless GET. HSTS already gives
+        the durable client-side upgrade, so permanence buys nothing.
+        ``Cache-Control: no-store`` + ``Vary: X-Forwarded-Proto`` state out
+        loud what the response actually depends on.
+        """
+        if not https_host:
+            return None
+        proto = (request.headers.get("X-Forwarded-Proto") or "").strip().lower()
+        if proto != "http":
+            return None
+        resp = redirect(f"https://{https_host}{_request_target()}", code=307)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Vary"] = "X-Forwarded-Proto"
+        return resp
+
+    @app.before_request
+    def _password_gate():
+        # NOT first: ``_https_redirect`` above is registered ahead of this and
+        # therefore runs first, so a plain-http visitor is upgraded before the
+        # login form (or any credential) is ever handled in the clear. That
+        # registration order is LOAD-BEARING — do not reorder these hooks.
+        # Redirects unauthenticated visitors to /login.
         if not password_gate_enabled:
             return None
         path = request.path
@@ -176,6 +282,9 @@ def create_app() -> Flask:
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("Referrer-Policy", "same-origin")
         resp.headers.setdefault("Content-Security-Policy", _CSP)
+        # HSTS: browsers ignore it over plain http (RFC 6797), so it is safe to
+        # send unconditionally and it can't break local dev.
+        resp.headers.setdefault("Strict-Transport-Security", _HSTS)
         return resp
 
     # -- routes ---------------------------------------------------------------
