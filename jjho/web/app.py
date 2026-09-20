@@ -85,9 +85,17 @@ _HSTS = "max-age=31536000"
 # Location header. Anything else (empty, a URL, a value with a slash, ':', or
 # whitespace) disables the redirect rather than emitting a malformed/injectable
 # target.
+#
+# ⚠️ At least ONE DOT is required (>=2 labels) and the final label may not be
+# all-digits. APP_HOST is a PUBLIC origin pin, and a public hostname always has
+# a dot. Without that rule `APP_HOST=localhost` — or a bare IPv4 literal —
+# VALIDATED, so every plain-http visitor got a live `Location: https://localhost/…`
+# and the loud fail-open branch never fired. Such a value now fails open + warns
+# instead. Kept byte-identical to the four sibling apps.
 _HOSTNAME_RE = re.compile(
     r"\A(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z")
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+    r"\.(?![0-9]+\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 
 _CTRL_RE = re.compile(r"[\x00-\x20\x7f]")
 
@@ -227,7 +235,9 @@ def create_app() -> Flask:
             return None
         resp = redirect(f"https://{https_host}{_request_target()}", code=307)
         resp.headers["Cache-Control"] = "no-store"
-        resp.headers["Vary"] = "X-Forwarded-Proto"
+        # .vary.add(), never headers["Vary"] = ...: Flask appends "Cookie" to
+        # Vary when the session is touched and an assignment would drop it.
+        resp.vary.add("X-Forwarded-Proto")
         return resp
 
     @app.before_request
@@ -285,6 +295,16 @@ def create_app() -> Flask:
         # HSTS: browsers ignore it over plain http (RFC 6797), so it is safe to
         # send unconditionally and it can't break local dev.
         resp.headers.setdefault("Strict-Transport-Security", _HSTS)
+        # Vary on EVERY response, not just the 307. The redirect decision keys
+        # entirely off X-Forwarded-Proto, so the 200/302 bodies it gates are
+        # equally scheme-dependent: without this a shared cache could store an
+        # https-served 200 and later hand it to a plain-http request. Theoretical
+        # behind Cloudflare today, but "the edge is one dashboard toggle from
+        # regressing" is this whole feature's threat model, so the
+        # cache-correctness argument is carried through.
+        # .vary.add() APPENDS — Flask adds "Cookie" to Vary when the session is
+        # touched, and ``headers["Vary"] = ...`` would silently clobber it.
+        resp.vary.add("X-Forwarded-Proto")
         return resp
 
     # -- routes ---------------------------------------------------------------
