@@ -286,11 +286,29 @@ mocked — no test makes a real API call.**
     recall it. `307` also preserves the method, so a plain-http POST is re-sent
     over https rather than silently downgraded to a bodiless GET. HSTS already
     supplies the durable client-side upgrade, so permanence buys nothing.
-    **Do not "restore" the 301.**
+    **Do not "restore" the 301.** **`Vary: X-Forwarded-Proto` is on EVERY
+    response, not just the 307** (B2, from the 2026-09-19 break-staging sweep):
+    the 200s/302s the redirect gates are equally scheme-dependent, so a shared
+    cache could otherwise store an https-served 200 and later hand it to a
+    plain-http request. Stamped in the security-headers `after_request` with
+    **`resp.vary.add()`, never `headers["Vary"] = …`** — Flask appends `Cookie`
+    to `Vary` itself when the session is touched, and assignment would silently
+    clobber it; `.vary.add()` is idempotent, so the 307's own value is not
+    doubled.
   - **The target host is always the configured `APP_HOST` pin, never the
     request's own Host/URL** — reflecting the Host would be an open redirect.
     `APP_HOST` unset or not a bare hostname ⇒ **redirecting is OFF (fail open)**,
-    so local dev and the test suite keep working.
+    so local dev and the test suite keep working. **A bare hostname must contain
+    at least one DOT and its final label may not be all-digits** (B1, same
+    sweep) — a public origin pin always has a dot, and without that rule
+    `APP_HOST=localhost` (or a bare IPv4 literal, or the compose service name
+    `jjho-fan-almanac`) *validated*, so every plain-http visitor got a live
+    `Location: https://localhost/…`: broken for everyone, and silent precisely
+    BECAUSE the value passed, so the fail-open branch never fired. Those values
+    now fail open. Strictly a tightening — `jjho.graham-williams.com`, the apex
+    and the 253-char boundary host all still pass. `_HOSTNAME_RE` is kept
+    **byte-identical** across km-tracker, taste-twin, hopper-dashboard and
+    baby-pool.
   - **`request.full_path` must NEVER be used to build the target** — Flask
     percent-*decodes* `request.path`, so `/a%20b` would be rebuilt as `/a b` and
     `/a%2Fb` as `/a/b`. `_request_target()` reads the raw request line from

@@ -110,7 +110,42 @@ def test_redirect_is_not_cacheable_and_declares_its_vary(client):
     resp = _get(client, "/static/css/app.css", HTTP)
     assert resp.status_code == 307
     assert resp.headers["Cache-Control"] == "no-store"
-    assert resp.headers["Vary"] == "X-Forwarded-Proto"
+    assert "X-Forwarded-Proto" in resp.headers["Vary"]
+
+
+# --- B2: Vary is two-sided -------------------------------------------------
+#
+# `Vary: X-Forwarded-Proto` used to be on the 307 ONLY. The 200s/302s whose
+# content the redirect gates are equally scheme-dependent, so a shared cache
+# could store an https-served 200 and later hand it to a plain-http request.
+
+
+def _vary_tokens(resp):
+    return {t.strip().lower()
+            for t in resp.headers.get("Vary", "").split(",") if t.strip()}
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Forwarded-Proto": "https"}])
+def test_vary_is_on_non_redirect_responses_too(client, headers):
+    resp = client.get("/healthz", headers={**headers, "Host": HOST})
+    assert resp.status_code == 200
+    assert "x-forwarded-proto" in _vary_tokens(resp)
+
+
+def test_vary_append_does_not_clobber_an_existing_value(monkeypatch):
+    """⚠️ `headers["Vary"] = ...` DROPS a Vary already on the response.
+
+    Flask adds "Cookie" itself whenever the session is touched, so assignment
+    would break session caching. `.vary.add()` appends; both must survive.
+    """
+    from flask import Response
+    monkeypatch.setenv("APP_HOST", HOST)
+    app = create_app()
+    resp = Response("x")
+    resp.headers["Vary"] = "Cookie"
+    with app.test_request_context("/"):
+        resp = app.process_response(resp)
+    assert _vary_tokens(resp) == {"cookie", "x-forwarded-proto"}
 
 
 def test_redirect_preserves_the_method(client):
@@ -235,6 +270,15 @@ assert (len(_MAX_LEN_HOST), len(_OVERLONG_HOST)) == (253, 254)
     "jjho-.example.com",                 # trailing-hyphen label
     "jjho..example.com",                 # empty label
     _OVERLONG_HOST,                      # 254 chars: one over the DNS maximum
+    # --- B1: a public origin pin always has a dot ---------------------------
+    # These USED TO VALIDATE, which is why the bug was silent: APP_HOST=localhost
+    # emitted a live `Location: https://localhost/...` to every plain-http
+    # visitor instead of tripping the fail-open warning.
+    "localhost",                         # single label
+    "jjho-fan-almanac",                  # a compose service name
+    "127.0.0.1",                         # bare IPv4 literal
+    "192.168.1.1",
+    "::1",                               # IPv6 (never matched: ':' not in class)
 ])
 def test_malformed_app_host_disables_the_redirect(monkeypatch, bad_host):
     monkeypatch.setenv("APP_HOST", bad_host)
@@ -314,3 +358,17 @@ def test_session_cookie_is_secure_httponly_samesite(monkeypatch):
     assert "SameSite=Lax" in cookie
     # Only a signed marker is stored — never the password itself.
     assert "hunter2" not in cookie
+
+
+def test_a_public_origin_pin_must_have_a_dot_and_not_be_an_ip():
+    """B1: single-label values and bare IP literals are not public hostnames.
+
+    Strictly a TIGHTENING — every host these apps actually use still passes.
+    """
+    from jjho.web.app import _HOSTNAME_RE
+    for good in ("jjho.graham-williams.com", "graham-williams.com",
+                 "jjho.example.com", "a.b", _MAX_LEN_HOST):
+        assert _HOSTNAME_RE.fullmatch(good), good
+    for bad in ("localhost", "x", "jjho", "127.0.0.1", "0.0.0.0",
+                "192.168.1.1", "255.255.255.255"):
+        assert not _HOSTNAME_RE.fullmatch(bad), bad
