@@ -337,7 +337,9 @@ mocked — no test makes a real API call.**
 
 ### CI (`.github/workflows/ci.yml`)
 
-Runs on every PR to `main` and on pushes to `main`. One `test` job:
+Runs on every pull request (the `pull_request` trigger is deliberately
+unfiltered, so a stacked PR based on another branch still gets CI) and on
+pushes to `main`. One `test` job:
 Python 3.12, `pip install -r requirements-dev.txt`, `python -m pytest -q`
 (120 tests). No network — the scrapers are mocked.
 Actions are pinned by commit SHA, not by tag — a tag can be re-pointed at
