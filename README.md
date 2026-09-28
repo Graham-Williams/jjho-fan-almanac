@@ -58,7 +58,8 @@ and the phased build order.
 ## Run locally
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate   # Python 3.11+
+# Python 3.12 (>= 3.10 required by the pinned dependency set)
+uv venv --python 3.12 .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # Dev server. With no APP_PASSWORD the sign-in gate is OFF (local dev only).

@@ -93,11 +93,15 @@ in `web/search.py`; DB read helpers in `data/db.py`; the route is in `app.py`.
 
 ## Stack
 
-- **Python 3.11+**, **Flask** (server-rendered, no JS framework), **gunicorn**
-  to serve.
+- **Python 3.12** (the image is `python:3.12-slim`, CI runs 3.12). The pinned
+  dependency set needs **>= 3.10** — `anthropic` 1.x and `gunicorn` 25+ both
+  dropped 3.9, so the Mac's system `python3` (3.9) can no longer build a dev
+  venv for this repo (see "Dependency pinning" below).
+- **Flask** (server-rendered, no JS framework), **gunicorn** to serve.
 - Deps in `requirements.txt` (kept minimal): `flask`, `gunicorn`, `feedparser`
-  (RSS ingest), `requests` + `beautifulsoup4` (polite cached scraping),
-  `anthropic` (Claude API for Super Search).
+  (RSS ingest), `requests` + `beautifulsoup4` (polite cached scraping), `pypdf`
+  (PDF-era transcripts), `anthropic` (Claude API for Super Search). **All pinned
+  exactly (`==`) — see "Dependency pinning" below before changing that.**
 - **SQLite** index (episodes + transcripts), gitignored — re-derivable from
   public data, so no off-box backup.
 - Package `jjho/`:
@@ -204,7 +208,8 @@ the Docker image.
 ## Run / test
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate   # Python 3.11+
+# Python 3.12 — NOT the Mac's system python3 (3.9): the pinned deps need >= 3.10
+uv venv --python 3.12 .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # dev server — with no APP_PASSWORD the sign-in gate is OFF (local dev only)
@@ -221,7 +226,10 @@ python -m jjho.data.ingest --transcripts --all        # full backfill (slow)
 python -m jjho.data.ingest --stats                    # coverage summary only
 
 # Tier 2 — self-transcribe the episodes MaxFun never covered, via local Whisper.
-# Runs on Graham's MAC ONLY (needs mlx_whisper + ffmpeg + the cached model);
+# Runs on Graham's MAC ONLY. Needs ffmpeg, the cached HF model, and mlx_whisper
+# — which is deliberately NOT in requirements*.txt (Mac-only, never shipped in
+# the image). Install it into the dev venv by hand: `pip install mlx-whisper`.
+# The model itself lives in ~/.cache/huggingface and survives a venv rebuild.
 # resumable — safe to Ctrl-C and re-run; stream-downloads + deletes each mp3.
 .venv/bin/python -m jjho.data.asr            # full missing backfill (~570 eps, hours)
 .venv/bin/python -m jjho.data.asr --limit 1  # smoke test / one newest gap
@@ -238,11 +246,55 @@ Config is via env vars — copy `.env.example` → `.env`. Key ones: `APP_PASSWO
 (gate on), `SESSION_SECRET` (cookie signing), `ANTHROPIC_API_KEY` (Super
 Search), `APP_HOST` (Host/Origin CSRF pin for the deployed hostname).
 
-**Tests:** `pip install -r requirements-dev.txt` then `python -m pytest tests/`
-(the venv is Python 3.9 in dev; the code uses deferred annotations so it runs
-there and on the 3.11+ target). The suite covers the Super Search helpers, tier
-+ escalation logic, and route behaviour; **the Anthropic client is always
-mocked — no test makes a real API call.**
+**Tests:** build the dev venv on **Python 3.12** (`uv venv --python 3.12 .venv`
+— the pinned deps need >= 3.10, so a venv made from the Mac's system 3.9 fails
+to install with a confusing "no matching distribution" for versions that
+definitely exist), then `pip install -r requirements-dev.txt` and
+`python -m pytest tests/`. The suite covers the Super Search helpers, tier +
+escalation logic, and route behaviour; **the Anthropic client is always
+mocked — no test makes a real API call**, which is also why an `anthropic`
+version bump has to be reasoned about rather than trusted to the suite.
+
+### Dependency pinning — exact `==`, never a bounded range
+
+`requirements.txt` / `requirements-dev.txt` pin **every** direct dependency to an
+exact version. This is a deliberate convention (adopted 2026-09-27, matching
+baby-pool and km-tracker); do not "tidy" it back into `>=` floors or ranges.
+Two reasons:
+
+1. **Reproducibility — and this repo is the proof.** The Dockerfile runs
+   `pip install -r requirements.txt`, so a bare `>=` floor installs whatever is
+   newest at *image-build* time. This file said `gunicorn>=23.0` and
+   `anthropic>=0.40` while the box was running **gunicorn 26.2.0** and
+   **anthropic 1.7.0** — two major-version bumps that reached production on an
+   image rebuild, with no PR, no review and no test run. An unbounded floor is
+   not a dependency declaration, it is a promise to install the future.
+2. **Dependabot classifies exact pins correctly and bounded ranges incorrectly.**
+   `dependabot/fetch-metadata` misparses a two-sided range: `pypdf>=6.14.2,<7`
+   produced the PR title `Update pypdf requirement from <7,>=6.14.2 to
+   >=6.19.0,<7` and `update-type: version-update:semver-major` for what was a
+   **minor** bump, so `ci.yml`'s auto-merge gate (correctly) refused it and PR
+   #21 stuck forever. Unbounded entries parsed fine — PR #29 was reported as a
+   major because `gunicorn` 23 -> 26 genuinely is one. With `==` the title is
+   `Bump X from A to B` and minor/patch bumps auto-merge on green CI as intended.
+
+Rules when touching these files:
+
+- Pin to the version **actually deployed**, verified rather than recalled:
+  `ssh graham@100.101.1.28 'docker exec jjho-fan-almanac python3 -m pip freeze'`.
+  Never let a pin land *below* what prod runs — that is a silent downgrade on the
+  next deploy.
+- Let a Dependabot PR do the upgrading. Don't fold a version bump into an
+  unrelated change; a correctly-titled bump now auto-merges on its own.
+- **Transitive** deps (Werkzeug, httpx2, soupsieve, ...) are intentionally left
+  to the resolver — pin one only for a specific reason, stated in a comment next
+  to it.
+- The only `anthropic` API surface this app uses is
+  `messages.create(model, max_tokens, system, messages, thinking)` plus
+  `resp.content[].type/.text`, which is unchanged across 0.x -> 1.x. The 1.x
+  breaking changes that *could* bite here are the Python >= 3.10 floor, the
+  removal of the sampling params (`temperature`/`top_p`/`top_k` — unused) and of
+  Text Completions (unused). Re-check that list before moving the pin again.
 
 ## Security posture (keep these invariants)
 
