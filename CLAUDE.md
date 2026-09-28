@@ -226,7 +226,10 @@ python -m jjho.data.ingest --transcripts --all        # full backfill (slow)
 python -m jjho.data.ingest --stats                    # coverage summary only
 
 # Tier 2 — self-transcribe the episodes MaxFun never covered, via local Whisper.
-# Runs on Graham's MAC ONLY (needs mlx_whisper + ffmpeg + the cached model);
+# Runs on Graham's MAC ONLY. Needs ffmpeg, the cached HF model, and mlx_whisper
+# — which is deliberately NOT in requirements*.txt (Mac-only, never shipped in
+# the image). Install it into the dev venv by hand: `pip install mlx-whisper`.
+# The model itself lives in ~/.cache/huggingface and survives a venv rebuild.
 # resumable — safe to Ctrl-C and re-run; stream-downloads + deletes each mp3.
 .venv/bin/python -m jjho.data.asr            # full missing backfill (~570 eps, hours)
 .venv/bin/python -m jjho.data.asr --limit 1  # smoke test / one newest gap
