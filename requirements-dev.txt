@@ -1,4 +1,4 @@
 # Dev/test dependencies (not shipped in the runtime image). Pinned exactly for
 # the same two reasons as requirements.txt — see the header comment there.
 -r requirements.txt
-pytest==8.4.2
+pytest==9.1.1
