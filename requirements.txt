@@ -28,4 +28,4 @@ pypdf==6.19.0
 # the sampling params + Text Completions; jjho only uses
 # messages.create(model, max_tokens, system, messages, thinking), which is
 # unchanged across 0.x -> 1.x.
-anthropic==1.7.0
+anthropic==1.9.0
