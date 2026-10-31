@@ -23,7 +23,7 @@ feedparser==6.0.14
 requests==2.34.2
 beautifulsoup4==4.15.0
 # PDF-era official transcript extraction (episodes ~385-410).
-pypdf==6.21.3
+pypdf==6.21.4
 # Super Search. The 1.x line needs Python >= 3.10 (the image is 3.12) and drops
 # the sampling params + Text Completions; jjho only uses
 # messages.create(model, max_tokens, system, messages, thinking), which is
